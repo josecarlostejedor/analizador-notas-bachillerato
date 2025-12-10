@@ -5,8 +5,6 @@ from docx import Document
 from docx.shared import Inches, Pt, RGBColor
 from docx.enum.section import WD_ORIENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.oxml.ns import qn
-from docx.oxml import OxmlElement
 import openai
 import io
 import PyPDF2
@@ -82,124 +80,109 @@ def extract_text_from_docx(file):
         return "\n".join([para.text for para in doc.paragraphs])
     except: return ""
 
+# --- MODIFICACIÓN IMPORTANTE AQUÍ: PROMPT MEJORADO ---
 def process_data_with_ai(text_data, api_key, filename):
     if not text_data: return None
     client = openai.OpenAI(api_key=api_key)
+    
+    # Prompt específico para Actas de Evaluación desordenadas
     prompt = f"""
-    Analiza el texto académico de '{filename}'.
-    Extrae calificaciones en formato CSV. Columnas: "Alumno", "Materia", "Nota".
-    Reglas:
-    1. Materia: abreviatura (MAT, LE, ING).
-    2. Nota: número decimal (usar punto). Texto a número (Bien=6, Notable=7.5).
-    3. SOLO CSV.
-    Texto: {text_data[:15000]}
+    Analiza este texto extraído de un PDF de acta de evaluación ('{filename}').
+    
+    PROBLEMA DEL FORMATO: 
+    En este tipo de documentos, a menudo aparece primero la lista de alumnos con sus asignaturas, Y AL FINAL DEL TEXTO aparece un bloque de números separados que son las notas.
+    
+    TAREA:
+    1. Identifica la lista de alumnos y sus asignaturas (ej: EF, FILO, ING1...).
+    2. Identifica el bloque de números al final del texto.
+    3. Asocia secuencialmente: La primera fila de números corresponde al primer alumno, la segunda al segundo, etc.
+    4. Ignora alumnos que no tengan notas numéricas asociadas.
+    
+    SALIDA OBLIGATORIA:
+    Devuelve EXCLUSIVAMENTE un CSV con cabeceras: "Alumno", "Materia", "Nota".
+    - Materia: usa las abreviaturas del texto (EF, FILO, LCL1, ING1, etc).
+    - Nota: Número decimal.
+    
+    Texto a analizar:
+    {text_data[:15000]}
     """
+    
     try:
         response = client.chat.completions.create(
             model="gpt-4o",
-            messages=[{"role": "user", "content": prompt}], temperature=0
+            messages=[{"role": "user", "content": prompt}], 
+            temperature=0
         )
         csv = response.choices[0].message.content.replace("```csv", "").replace("```", "").strip()
+        # Si GPT devuelve texto introductorio, intentamos limpiar
+        if "," not in csv: return None 
         return pd.read_csv(io.StringIO(csv))
-    except: return None
+    except Exception as e: 
+        print(e)
+        return None
 
-# --- LÓGICA DE ANÁLISIS CUALITATIVO (NUEVA) ---
-
+# --- LÓGICA DE ANÁLISIS CUALITATIVO ---
 def generar_texto_analisis(alumno, datos_alumno, stats_mat):
-    """Genera un texto automático analizando al alumno vs la clase"""
-    
-    # Preparar datos
     notas_alumno = datos_alumno.set_index('Materia')['Nota']
     medias_clase = stats_mat.set_index('Materia')['Media']
-    
-    # Comparativa
     comparativa = notas_alumno - medias_clase
     
-    # Mejores y peores
     if notas_alumno.empty: return "No hay datos suficientes."
     
     mejor_materia = notas_alumno.idxmax()
     mejor_nota = notas_alumno.max()
     peor_materia = notas_alumno.idxmin()
     peor_nota = notas_alumno.min()
-    
     suspensos = notas_alumno[notas_alumno < 5].index.tolist()
     num_suspensos = len(suspensos)
     
-    # Construcción del texto
     texto = []
-    
-    # 1. Análisis de rendimiento
     if num_suspensos == 0:
         texto.append(f"El alumno {alumno} ha tenido un rendimiento excelente, aprobando todas las materias.")
-        texto.append(f"Destaca especialmente en {mejor_materia} con un {mejor_nota}.")
+        texto.append(f"Destaca en {mejor_materia} con un {mejor_nota}.")
     elif num_suspensos <= 2:
         texto.append(f"El alumno presenta un buen rendimiento general, aunque necesita reforzar {', '.join(suspensos)}.")
-        texto.append(f"Su mejor resultado ha sido en {mejor_materia} ({mejor_nota}).")
     else:
-        texto.append(f"El alumno presenta dificultades significativas, con {num_suspensos} materias insuficientes ({', '.join(suspensos)}).")
-        texto.append("Es necesario un plan de recuperación urgente.")
+        texto.append(f"El alumno presenta dificultades significativas, con {num_suspensos} materias insuficientes.")
 
-    # 2. Comparativa con la media
-    materias_top = comparativa[comparativa > 0].index.tolist()
-    if materias_top:
-        texto.append(f"Supera la media de la clase en {len(materias_top)} asignaturas, destacando su desempeño por encima del promedio.")
-    else:
-        texto.append("Actualmente se encuentra por debajo de la media del grupo en las materias evaluadas.")
+    if not comparativa.empty:
+        materias_top = comparativa[comparativa > 0].index.tolist()
+        if materias_top:
+            texto.append(f"Supera la media de la clase en {len(materias_top)} asignaturas.")
+        else:
+            texto.append("Se encuentra por debajo de la media del grupo.")
 
-    # 3. Recomendaciones (Consejos)
     texto.append("\nRecomendaciones:")
     if num_suspensos > 0:
-        texto.append(f"- Priorizar el estudio de {peor_materia}, donde se registra la calificación más baja ({peor_nota}).")
-        texto.append("- Se recomienda asistir a tutorías de refuerzo y revisar los conceptos base de las materias no superadas.")
-        if num_suspensos > 2:
-            texto.append("- Es aconsejable una reunión con la familia para establecer un horario de estudio supervisado.")
+        texto.append(f"- Priorizar el estudio de {peor_materia} ({peor_nota}).")
+        texto.append("- Asistir a tutorías de refuerzo.")
     else:
         texto.append("- Mantener la constancia actual.")
-        if mejor_nota < 9:
-            texto.append(f"- Intentar subir nota en {peor_materia} participando más en clase.")
-        else:
-            texto.append("- ¡Felicidades! Continúa ayudando a compañeros en tus materias fuertes.")
 
     return " ".join(texto)
 
-# --- FUNCIONES DE WORD MODIFICADAS ---
-
+# --- FUNCIONES DE WORD ---
 def add_alumno_to_doc(doc, alumno, datos_alumno, media, suspensos, stats_mat):
-    """Añade página completa de alumno con análisis y comparativa"""
-    
-    # Título
     doc.add_heading(f'Informe Individual: {alumno}', 0)
     p_info = doc.add_paragraph(f"Nota Media: {media:.2f} | Materias Suspensas: {suspensos}")
     p_info.alignment = WD_ALIGN_PARAGRAPH.CENTER
     
-    # --- SECCIÓN 1: ANÁLISIS CUALITATIVO ---
     doc.add_heading('Análisis y Recomendaciones', level=2)
-    texto_analisis = generar_texto_analisis(alumno, datos_alumno, stats_mat)
-    p_analisis = doc.add_paragraph(texto_analisis)
+    p_analisis = doc.add_paragraph(generar_texto_analisis(alumno, datos_alumno, stats_mat))
     p_analisis.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
     
-    # --- SECCIÓN 2: TABLA COMPARATIVA ---
     doc.add_heading('Comparativa de Rendimiento', level=2)
-    
     t = doc.add_table(rows=1, cols=4)
     t.style = 'Table Grid'
     t.autofit = False 
+    t.columns[0].width = Inches(2.5)
+    t.columns[1].width = Inches(1.2)
+    t.columns[2].width = Inches(1.2)
+    t.columns[3].width = Inches(1.5)
     
-    # Anchos
-    t.columns[0].width = Inches(2.5) # Materia
-    t.columns[1].width = Inches(1.2) # Nota
-    t.columns[2].width = Inches(1.2) # Media Clase
-    t.columns[3].width = Inches(1.5) # Situación
-    
-    # Cabeceras
     hdr = t.rows[0].cells
-    hdr[0].text = 'Materia'
-    hdr[1].text = 'Nota Alumno'
-    hdr[2].text = 'Media Clase'
-    hdr[3].text = 'Diferencia'
+    hdr[0].text = 'Materia'; hdr[1].text = 'Nota Alumno'; hdr[2].text = 'Media Clase'; hdr[3].text = 'Diferencia'
     
-    # Datos para comparar
     medias_dict = stats_mat.set_index('Materia')['Media'].to_dict()
     
     for _, row in datos_alumno.iterrows():
@@ -213,15 +196,13 @@ def add_alumno_to_doc(doc, alumno, datos_alumno, media, suspensos, stats_mat):
         c[1].text = str(nota)
         c[2].text = f"{media_clase:.2f}"
         
-        # Lógica de colores y texto para la diferencia
         if diferencia > 0:
-            c[3].text = f"+{diferencia:.2f} (Superior)"
-            c[3].paragraphs[0].runs[0].font.color.rgb = RGBColor(0, 128, 0) # Verde
+            c[3].text = f"+{diferencia:.2f}"
+            c[3].paragraphs[0].runs[0].font.color.rgb = RGBColor(0, 128, 0)
         else:
-            c[3].text = f"{diferencia:.2f} (Inferior)"
-            c[3].paragraphs[0].runs[0].font.color.rgb = RGBColor(255, 0, 0) # Rojo
+            c[3].text = f"{diferencia:.2f}"
+            c[3].paragraphs[0].runs[0].font.color.rgb = RGBColor(255, 0, 0)
             
-        # Resaltar suspensos del alumno en columna Nota
         if nota < 5:
             c[1].paragraphs[0].runs[0].font.color.rgb = RGBColor(255, 0, 0)
             c[1].paragraphs[0].runs[0].bold = True
@@ -237,18 +218,12 @@ def crear_informe_individual(alumno, datos_alumno, media, suspensos, stats_mat):
 def generar_informe_todos_alumnos(df, stats_al, stats_mat):
     doc = Document()
     alumnos_lista = stats_al['Alumno'].unique()
-    
     for i, alumno in enumerate(alumnos_lista):
         datos_alumno = df[df['Alumno'] == alumno]
         info_alumno = stats_al[stats_al['Alumno'] == alumno].iloc[0]
-        
-        # Añadir contenido del alumno PASANDO stats_mat para la comparativa
         add_alumno_to_doc(doc, alumno, datos_alumno, info_alumno['Media'], info_alumno['Suspensos'], stats_mat)
-        
-        # Añadir salto de página si no es el último alumno
         if i < len(alumnos_lista) - 1:
             doc.add_page_break()
-            
     bio = io.BytesIO()
     doc.save(bio)
     bio.seek(0)
@@ -259,15 +234,11 @@ def generate_global_report(res, plots):
     section = doc.sections[0]
     section.orientation = WD_ORIENT.LANDSCAPE
     section.page_width, section.page_height = section.page_height, section.page_width
-
     doc.add_heading('Informe de Evaluación - IES Lucía de Medrano', 0)
     doc.add_paragraph('Tutor: Jose Carlos Tejedor')
     
     doc.add_heading('Resumen Ejecutivo', 1)
-    p = doc.add_paragraph()
-    p.add_run(f"Total Alumnos: {res['total']}\n").bold = True
-    p.add_run(f"Promoción: {res['pasan']} alumnos ({res['pct_pasan']:.1f}%)\n")
-    p.add_run(f"No Promoción: {res['no_pasan']} alumnos")
+    doc.add_paragraph(f"Total Alumnos: {res['total']} | Promoción: {res['pasan']} ({res['pct_pasan']:.1f}%) | No Promocionan: {res['no_pasan']}")
 
     doc.add_heading('Estadísticas por Materia', 1)
     t = doc.add_table(1, 4)
@@ -280,38 +251,28 @@ def generate_global_report(res, plots):
         c[2].text=f"{row['Pct_Suspensos']:.1f}%"; c[3].text=f"{row['Media']:.2f}"
     
     doc.add_heading('Gráficas', 1)
-    for p in plots:
-        doc.add_picture(p, width=Inches(6))
+    for p in plots: doc.add_picture(p, width=Inches(6))
     
     bio = io.BytesIO()
     doc.save(bio)
     bio.seek(0)
     return bio
 
-# --- INTERFAZ BARRA LATERAL ---
+# --- INTERFAZ ---
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/2991/2991148.png", width=50)
     st.title("Configuración")
     api_key = st.text_input("🔑 API Key OpenAI", type="password")
-    
     st.markdown("---")
-    
     centro = st.text_input("Centro", "IES Lucía de Medrano")
     grupo = st.text_input("Grupo", "1º BACH 7")
     curso = st.text_input("Curso", "2024-2025")
-    
     st.markdown("---")
-    uploaded_files = st.file_uploader(
-        "📂 Subir Actas", 
-        type=['xlsx', 'pdf', 'docx', 'doc'], 
-        accept_multiple_files=True,
-        key=f"up_{st.session_state.uploader_key}"
-    )
+    uploaded_files = st.file_uploader("📂 Subir Actas", type=['xlsx', 'pdf', 'docx', 'doc'], accept_multiple_files=True, key=f"up_{st.session_state.uploader_key}")
     
     if uploaded_files and st.session_state.data is None:
         if st.button("Analizar Archivos", type="primary"):
-            if not api_key:
-                st.error("Falta la API Key")
+            if not api_key: st.error("Falta la API Key")
             else:
                 dfs = []
                 bar = st.progress(0)
@@ -338,27 +299,21 @@ with st.sidebar:
                 if dfs:
                     st.session_state.data = pd.concat(dfs, ignore_index=True)
                     st.rerun()
-                else:
-                    st.error("No se extrajeron datos.")
+                else: st.error("No se extrajeron datos.")
 
     if st.session_state.data is not None:
-        if st.button("🔄 Subir otro archivo (Reiniciar)"):
-            reiniciar_app()
+        if st.button("🔄 Subir otro archivo (Reiniciar)"): reiniciar_app()
 
-# --- ÁREA PRINCIPAL ---
 st.title("Acta de Evaluación")
-# Badges superiores
 col_b1, col_b2, col_b3 = st.columns([1,1,1])
 col_b1.info(f"🏫 **Centro:** {centro}")
 col_b2.info(f"👥 **Grupo:** {grupo}")
 col_b3.info(f"📅 **Curso:** {curso}")
 
 if st.session_state.data is not None:
-    # --- LIMPIEZA DATOS ---
     df = st.session_state.data.drop_duplicates(subset=['Alumno', 'Materia'], keep='last')
     df['Nota'] = pd.to_numeric(df['Nota'], errors='coerce')
     
-    # CÁLCULOS
     stats_al = df.groupby('Alumno').agg(
         Suspensos=('Nota', lambda x: (x<5).sum()),
         Media=('Nota', 'mean')
@@ -376,42 +331,23 @@ if st.session_state.data is not None:
     no_pasan = total_alumnos - pasan
     pct_pasan = (pasan/total_alumnos)*100 if total_alumnos > 0 else 0
     
-    if not stats_mat.empty:
-        peor_materia = stats_mat.loc[stats_mat['Suspensos'].idxmax()]
-    else:
-        peor_materia = pd.Series({'Materia': 'N/A', 'Suspensos': 0})
+    if not stats_mat.empty: peor_materia = stats_mat.loc[stats_mat['Suspensos'].idxmax()]
+    else: peor_materia = pd.Series({'Materia': 'N/A', 'Suspensos': 0})
     
-    # --- PESTAÑAS ---
     tab1, tab2, tab3, tab4 = st.tabs(["📊 Informe General", "📚 Por Materias", "🎓 Por Alumnos", "📄 Informes Individuales"])
     
-    # 1. INFORME GENERAL
     with tab1:
-        st.markdown(f"""
-        <div class="highlight-box">
-            <h4>📄 Resumen Ejecutivo del Análisis</h4>
-            <p>Se ha analizado el acta del grupo <b>{grupo}</b>. El grupo consta de <b>{total_alumnos}</b> alumnos evaluados.</p>
-            <p>En términos de rendimiento global, <b>{pasan} alumnos ({pct_pasan:.1f}%)</b> cumplen los requisitos de promoción 
-            (0, 1 o 2 materias suspensas).</p>
-        </div>
-        """, unsafe_allow_html=True)
-        
+        st.markdown(f"""<div class="highlight-box"><h4>📄 Resumen Ejecutivo</h4><p>Rendimiento global: <b>{pasan} alumnos ({pct_pasan:.1f}%)</b> promocionan.</p></div>""", unsafe_allow_html=True)
         kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-        kpi1.metric("Alumnos Totales", total_alumnos)
-        kpi2.metric("Tasa Promoción", f"{pct_pasan:.1f}%")
-        kpi3.metric("Media del Grupo", f"{df['Nota'].mean():.2f}")
-        kpi4.metric("Suspensos Totales", int(stats_mat['Suspensos'].sum()))
-        
-        st.markdown("---")
+        kpi1.metric("Alumnos", total_alumnos); kpi2.metric("Promoción", f"{pct_pasan:.1f}%")
+        kpi3.metric("Media Grupo", f"{df['Nota'].mean():.2f}"); kpi4.metric("Suspensos", int(stats_mat['Suspensos'].sum()))
         
         g1, g2 = st.columns(2)
         with g1:
-            st.subheader("Promoción del Alumnado")
             fig, ax = plt.subplots()
-            ax.pie([pasan, no_pasan], labels=['Promocionan', 'No Promocionan'], autopct='%1.1f%%', colors=['#00CC96', '#EF553B'])
+            ax.pie([pasan, no_pasan], labels=['Promocionan', 'No'], autopct='%1.1f%%', colors=['#00CC96', '#EF553B'])
             st.pyplot(fig)
-            
         with g2:
-            st.subheader("Distribución de Suspensos")
             fig2, ax2 = plt.subplots()
             conteos = stats_al['Suspensos'].value_counts().sort_index()
             ax2.bar(conteos.index.astype(str), conteos.values, color='#636EFA')
@@ -420,79 +356,32 @@ if st.session_state.data is not None:
         img_buf = io.BytesIO(); fig.savefig(img_buf, format='png'); img_buf.seek(0)
         img_buf2 = io.BytesIO(); fig2.savefig(img_buf2, format='png'); img_buf2.seek(0)
         
-        res_global = {
-            'total': total_alumnos, 'pasan': pasan, 'pct_pasan': pct_pasan, 
-            'no_pasan': no_pasan, 'ranking': stats_mat.sort_values('Pct_Suspensos', ascending=False)
-        }
-        word_global = generate_global_report(res_global, [img_buf, img_buf2])
-        st.download_button("📥 Descargar Informe Completo (Word)", word_global, "Informe_Global.docx")
+        res_global = {'total': total_alumnos, 'pasan': pasan, 'pct_pasan': pct_pasan, 'no_pasan': no_pasan, 'ranking': stats_mat.sort_values('Pct_Suspensos', ascending=False)}
+        st.download_button("📥 Descargar Informe Completo (Word)", generate_global_report(res_global, [img_buf, img_buf2]), "Informe_Global.docx")
 
-    # 2. POR MATERIAS
     with tab2:
-        st.subheader("Análisis Detallado por Asignatura")
-        col_m1, col_m2 = st.columns([2, 1])
-        with col_m1:
-            st.dataframe(stats_mat.sort_values('Suspensos', ascending=False), use_container_width=True)
-        with col_m2:
-            st.info(f"📉 **Más difícil:** {peor_materia['Materia']} ({peor_materia['Suspensos']} suspensos)")
-            if not stats_mat.empty:
-                mejor_mat = stats_mat.loc[stats_mat['Media'].idxmax()]
-                st.success(f"📈 **Mejor media:** {mejor_mat['Materia']} ({mejor_mat['Media']:.2f})")
+        c1, c2 = st.columns([2, 1])
+        c1.dataframe(stats_mat.sort_values('Suspensos', ascending=False), use_container_width=True)
+        c2.info(f"📉 **Más difícil:** {peor_materia['Materia']}")
 
-    # 3. POR ALUMNOS
     with tab3:
-        st.subheader("Listado de Calificaciones")
         st.dataframe(stats_al.sort_values('Suspensos'), use_container_width=True)
-        
-        st.subheader("Detalle de Notas (Todos)")
         pivot = df.pivot_table(index='Alumno', columns='Materia', values='Nota', aggfunc='first')
         st.dataframe(pivot)
 
-    # 4. INFORMES INDIVIDUALES (MEJORADO)
     with tab4:
-        st.subheader("🖨️ Boletines con Análisis y Consejos")
-        
         c_izq, c_der = st.columns(2)
-        
-        # --- INDIVIDUAL ---
         with c_izq:
-            st.markdown("### 👤 Alumno Individual")
-            alumno_sel = st.selectbox("Selecciona un alumno:", stats_al['Alumno'].unique())
-            
+            alumno_sel = st.selectbox("Selecciona alumno:", stats_al['Alumno'].unique())
             if alumno_sel:
                 datos_alumno = df[df['Alumno'] == alumno_sel]
                 info_alumno = stats_al[stats_al['Alumno'] == alumno_sel].iloc[0]
-                
-                # Vista previa del análisis
-                with st.expander("Ver análisis generado"):
-                    st.write(generar_texto_analisis(alumno_sel, datos_alumno, stats_mat))
-                
-                word_indiv = crear_informe_individual(alumno_sel, datos_alumno, info_alumno['Media'], info_alumno['Suspensos'], stats_mat)
-                
-                st.download_button(
-                    label=f"⬇️ Descargar solo {alumno_sel}",
-                    data=word_indiv,
-                    file_name=f"Informe_{alumno_sel}.docx",
-                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                )
+                with st.expander("Ver análisis"): st.write(generar_texto_analisis(alumno_sel, datos_alumno, stats_mat))
+                st.download_button(f"⬇️ Descargar {alumno_sel}", crear_informe_individual(alumno_sel, datos_alumno, info_alumno['Media'], info_alumno['Suspensos'], stats_mat), f"Informe_{alumno_sel}.docx")
         
-        # --- MASIVO ---
         with c_der:
-            st.markdown("### 🏫 Toda la Clase")
-            st.info("Genera un documento único con el análisis detallado, recomendaciones y comparativas de cada alumno.")
-            
-            if st.button("🚀 Generar Informe Masivo"):
-                with st.spinner("Analizando y generando informes..."):
-                    word_todos = generar_informe_todos_alumnos(df, stats_al, stats_mat)
-                    
-                    st.success("¡Documento listo!")
-                    st.download_button(
-                        label="⬇️ Descargar TODOS los alumnos (.docx)",
-                        data=word_todos,
-                        file_name=f"Boletines_Analisis_{grupo}.docx",
-                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                        type="primary"
-                    )
-
+            if st.button("🚀 Generar Informe Masivo (Toda la clase)"):
+                with st.spinner("Generando..."):
+                    st.download_button("⬇️ Descargar TODOS (.docx)", generar_informe_todos_alumnos(df, stats_al, stats_mat), f"Boletines_{grupo}.docx", type="primary")
 else:
-    st.info("👈 Por favor, sube las actas en el menú lateral para ver el análisis.")
+    st.info("👈 Sube las actas en el menú lateral.")
