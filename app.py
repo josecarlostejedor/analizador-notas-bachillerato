@@ -66,4 +66,4 @@ else:
             st.dataframe(res['ranking'][['Materia','Suspensos','Pct_Suspensos']])
         else:
             # Mensaje amigable si falló todo
-            st.error("❌ No se pudieron extraer datos válidos. Verifica tu API Key o el formato de los archivos.")          
+            st.error("❌ No se pudieron extraer datos válidos. Verifica tu API Key o el formato de los archivos.")
