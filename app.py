@@ -55,18 +55,15 @@ def reiniciar_app():
     st.session_state.uploader_key += 1
     st.rerun()
 
-# --- FUNCIONES DE EXTRACCIÓN ---
-def extract_table_data_from_pdf(file):
+# --- FUNCIONES DE EXTRACCIÓN (MEJORADAS) ---
+def extract_text_with_pdfplumber(file):
+    """Extrae TODO el texto manteniendo la disposición visual aproximada"""
     text_content = ""
     try:
         with pdfplumber.open(file) as pdf:
             for page in pdf.pages:
-                tables = page.extract_tables()
-                for table in tables:
-                    for row in table:
-                        clean_row = [str(cell).replace("\n", " ") if cell is not None else "" for cell in row]
-                        if any(len(c) > 0 for c in clean_row):
-                            text_content += " | ".join(clean_row) + "\n"
+                # Extraer texto crudo preservando layout
+                text_content += page.extract_text(x_tolerance=2, y_tolerance=2) + "\n"
         return text_content
     except Exception as e:
         return ""
@@ -80,16 +77,27 @@ def extract_text_from_docx(file):
 def process_data_with_ai(text_data, api_key, filename):
     if not text_data: return None
     client = openai.OpenAI(api_key=api_key)
+    
+    # PROMPT DISEÑADO ESPECÍFICAMENTE PARA TU CASO
     prompt = f"""
-    Analiza esta tabla de acta de evaluación ('{filename}').
-    Filas por saltos de línea, columnas por '|'.
-    TAREA: Extrae CSV con columnas: "Alumno", "Materia", "Nota".
+    Analiza el siguiente texto de un acta de evaluación ('{filename}').
+    
+    ATENCIÓN AL FORMATO:
+    1. Al principio aparece una lista de alumnos con asignaturas (ej: EF, FILO, ING1...).
+    2. A menudo, LAS NOTAS (números) aparecen AL FINAL DEL BLOQUE DE TEXTO, separadas de los nombres, como filas de números sueltos (ej: "7 8 8 9...").
+    3. Tu tarea es ASOCIAR la primera fila de números al primer alumno, la segunda al segundo, etc.
+    
+    TAREA:
+    Genera un CSV con columnas: "Alumno", "Materia", "Nota".
+    
     REGLAS:
-    1. Primera columna es Alumno.
-    2. Siguientes son Materias (EF, FILO, etc).
-    3. Ignora cabeceras repetidas.
-    4. Convierte notas a numérico. Si es texto (ej: EX), pon vacío.
-    Datos: {text_data[:15000]}
+    - Materia: Usa las abreviaturas del texto (EF, ING1, MCS1, etc).
+    - Nota: Numérico.
+    - Si el alumno tiene asignaturas listadas pero no encuentras sus notas numéricas abajo, ignóralo.
+    - Devuelve SOLO el CSV.
+    
+    Texto:
+    {text_data[:15000]}
     """
     try:
         response = client.chat.completions.create(
@@ -229,7 +237,8 @@ with st.sidebar:
                             df_t = d
                         except: pass
                     elif f.name.endswith('.pdf'):
-                        txt = extract_table_data_from_pdf(f)
+                        # --- AQUÍ USAMOS LA FUNCIÓN MEJORADA ---
+                        txt = extract_text_with_pdfplumber(f)
                         if txt: df_t = process_data_with_ai(txt, api_key, f.name)
                     elif 'doc' in f.name:
                         txt = extract_text_from_docx(f)
@@ -253,11 +262,8 @@ col_b2.info(f"👥 **Grupo:** {grupo}")
 col_b3.info(f"📅 **Curso:** {curso}")
 
 if st.session_state.data is not None:
-    # --- CORRECCIÓN CRÍTICA DE COLUMNAS (SOLUCIÓN KEYERROR) ---
-    # Limpiar espacios en nombres de columnas
+    # --- CORRECCIÓN DE COLUMNAS ---
     st.session_state.data.columns = st.session_state.data.columns.str.strip()
-    
-    # Renombrar si la IA devolvió nombres distintos
     cols_map = {
         'Student': 'Alumno', 'Nombre': 'Alumno', 'Apellidos y Nombre': 'Alumno',
         'Subject': 'Materia', 'Asignatura': 'Materia',
@@ -265,14 +271,12 @@ if st.session_state.data is not None:
     }
     st.session_state.data.rename(columns=cols_map, inplace=True)
 
-    # Verificar existencia de columnas antes de seguir
     required_cols = ['Alumno', 'Materia', 'Nota']
     missing = [c for c in required_cols if c not in st.session_state.data.columns]
     
     if missing:
-        st.error(f"❌ Error: La IA no encontró las columnas correctas. Faltan: {missing}. Intenta subir el archivo de nuevo.")
+        st.error(f"❌ Error: La IA no encontró las columnas correctas. Faltan: {missing}.")
     else:
-        # Aquí ya es seguro ejecutar el código
         df = st.session_state.data.drop_duplicates(subset=['Alumno', 'Materia'], keep='last')
         df['Nota'] = pd.to_numeric(df['Nota'], errors='coerce')
         df['Aprobado'] = df['Nota'] >= 5
