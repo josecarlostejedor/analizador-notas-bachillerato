@@ -18,7 +18,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- ESTILOS CSS PARA QUE SE PAREZCA A LA FOTO ---
+# --- ESTILOS CSS ---
 st.markdown("""
 <style>
     .stTabs [data-baseweb="tab-list"] { gap: 2px; }
@@ -64,7 +64,7 @@ def reiniciar_app():
     st.session_state.uploader_key += 1
     st.rerun()
 
-# --- FUNCIONES DE EXTRACCIÓN (Iguales que antes) ---
+# --- FUNCIONES DE EXTRACCIÓN ---
 def extract_text_from_pdf(file):
     try:
         pdf_reader = PyPDF2.PdfReader(file)
@@ -117,7 +117,9 @@ def crear_informe_individual(alumno, datos_alumno, media, suspensos):
         c[0].text = str(row['Materia'])
         c[1].text = str(row['Nota'])
         if row['Nota'] < 5:
-            c[1].paragraphs[0].runs[0].font.color.rgb = RGBColor(255, 0, 0)
+            # Poner en rojo si suspende
+            run = c[1].paragraphs[0].runs[0]
+            run.font.color.rgb = RGBColor(255, 0, 0)
             
     bio = io.BytesIO()
     doc.save(bio)
@@ -158,9 +160,7 @@ def generate_global_report(res, plots):
     bio.seek(0)
     return bio
 
-# --- INTERFAZ ---
-
-# Barra Lateral
+# --- INTERFAZ BARRA LATERAL ---
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/2991/2991148.png", width=50)
     st.title("Configuración")
@@ -168,7 +168,6 @@ with st.sidebar:
     
     st.markdown("---")
     
-    # Entradas manuales para que se vea como la foto
     centro = st.text_input("Centro", "IES Lucía de Medrano")
     grupo = st.text_input("Grupo", "1º BACH 7")
     curso = st.text_input("Curso", "2024-2025")
@@ -181,7 +180,8 @@ with st.sidebar:
         key=f"up_{st.session_state.uploader_key}"
     )
     
-    if uploaded_files and not st.session_state.data:
+    # --- CORRECCIÓN AQUÍ: Usamos 'is None' en lugar de 'not' ---
+    if uploaded_files and st.session_state.data is None:
         if st.button("Analizar Archivos", type="primary"):
             if not api_key:
                 st.error("Falta la API Key")
@@ -219,7 +219,6 @@ with st.sidebar:
             reiniciar_app()
 
 # --- ÁREA PRINCIPAL ---
-
 st.title("Acta de Evaluación")
 # Badges superiores
 col_b1, col_b2, col_b3 = st.columns([1,1,1])
@@ -252,10 +251,10 @@ if st.session_state.data is not None:
     mejor_alumno = stats_al.loc[stats_al['Media'].idxmax()]
     peor_materia = stats_mat.loc[stats_mat['Suspensos'].idxmax()]
     
-    # --- PESTAÑAS (AQUÍ ESTÁ LA MAGIA VISUAL) ---
+    # --- PESTAÑAS ---
     tab1, tab2, tab3, tab4 = st.tabs(["📊 Informe General", "📚 Por Materias", "🎓 Por Alumnos", "📄 Informes PDF"])
     
-    # 1. INFORME GENERAL (Dashboad)
+    # 1. INFORME GENERAL
     with tab1:
         st.markdown(f"""
         <div class="highlight-box">
@@ -287,12 +286,11 @@ if st.session_state.data is not None:
             st.subheader("Distribución de Suspensos")
             fig2, ax2 = plt.subplots()
             conteos = stats_al['Suspensos'].value_counts().sort_index()
-            # Asegurar que existan categorías 0, 1, 2...
             ax2.bar(conteos.index.astype(str), conteos.values, color='#636EFA')
             ax2.set_xlabel("Número de materias suspensas")
             st.pyplot(fig2)
 
-        # Botón descarga global
+        # Descarga
         img_buf = io.BytesIO(); fig.savefig(img_buf, format='png'); img_buf.seek(0)
         img_buf2 = io.BytesIO(); fig2.savefig(img_buf2, format='png'); img_buf2.seek(0)
         
@@ -320,11 +318,10 @@ if st.session_state.data is not None:
         st.dataframe(stats_al.sort_values('Suspensos'), use_container_width=True)
         
         st.subheader("Detalle de Notas (Todos)")
-        # Pivot table para ver notas como matriz
         pivot = df.pivot(index='Alumno', columns='Materia', values='Nota')
         st.dataframe(pivot)
 
-    # 4. INFORMES INDIVIDUALES (NUEVO)
+    # 4. INFORMES INDIVIDUALES
     with tab4:
         st.subheader("🖨️ Generador de Boletines Individuales")
         col_sel, col_btn = st.columns([3, 1])
@@ -339,11 +336,10 @@ if st.session_state.data is not None:
             st.write(f"**Resumen para {alumno_sel}:**")
             st.table(datos_alumno[['Materia', 'Nota']])
             
-            # Generar Word solo para este alumno
             word_indiv = crear_informe_individual(alumno_sel, datos_alumno, info_alumno['Media'], info_alumno['Suspensos'])
             
             with col_btn:
-                st.write("") # Espaciador
+                st.write("") 
                 st.write("") 
                 st.download_button(
                     label=f"📥 Descargar Informe de {alumno_sel}",
