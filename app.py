@@ -55,14 +55,13 @@ def reiniciar_app():
     st.session_state.uploader_key += 1
     st.rerun()
 
-# --- FUNCIONES DE EXTRACCIÓN (MEJORADAS) ---
+# --- FUNCIONES DE EXTRACCIÓN (INTACTAS) ---
 def extract_text_with_pdfplumber(file):
     """Extrae TODO el texto manteniendo la disposición visual aproximada"""
     text_content = ""
     try:
         with pdfplumber.open(file) as pdf:
             for page in pdf.pages:
-                # Extraer texto crudo preservando layout
                 text_content += page.extract_text(x_tolerance=2, y_tolerance=2) + "\n"
         return text_content
     except Exception as e:
@@ -78,22 +77,19 @@ def process_data_with_ai(text_data, api_key, filename):
     if not text_data: return None
     client = openai.OpenAI(api_key=api_key)
     
-    # PROMPT DISEÑADO ESPECÍFICAMENTE PARA TU CASO
     prompt = f"""
     Analiza el siguiente texto de un acta de evaluación ('{filename}').
     
     ATENCIÓN AL FORMATO:
     1. Al principio aparece una lista de alumnos con asignaturas (ej: EF, FILO, ING1...).
-    2. A menudo, LAS NOTAS (números) aparecen AL FINAL DEL BLOQUE DE TEXTO, separadas de los nombres, como filas de números sueltos (ej: "7 8 8 9...").
+    2. A menudo, LAS NOTAS (números) aparecen AL FINAL DEL BLOQUE DE TEXTO, separadas de los nombres.
     3. Tu tarea es ASOCIAR la primera fila de números al primer alumno, la segunda al segundo, etc.
     
     TAREA:
     Genera un CSV con columnas: "Alumno", "Materia", "Nota".
-    
     REGLAS:
-    - Materia: Usa las abreviaturas del texto (EF, ING1, MCS1, etc).
+    - Materia: Usa abreviaturas (EF, ING1, etc).
     - Nota: Numérico.
-    - Si el alumno tiene asignaturas listadas pero no encuentras sus notas numéricas abajo, ignóralo.
     - Devuelve SOLO el CSV.
     
     Texto:
@@ -109,23 +105,65 @@ def process_data_with_ai(text_data, api_key, filename):
         return pd.read_csv(io.StringIO(csv))
     except: return None
 
-# --- LÓGICA DE VALORACIÓN ---
-def obtener_valoracion(pct_promocion):
-    if pct_promocion >= 90:
-        return "Los resultados son excelentes. La inmensa mayoría del grupo ha alcanzado los objetivos previstos."
-    elif pct_promocion >= 75:
-        return "Los resultados son muy positivos. Una gran parte del alumnado promociona."
-    elif pct_promocion >= 60:
-        return "Los resultados son aceptables, aunque existe un porcentaje significativo que no alcanza los mínimos."
-    else:
-        return "Los resultados son preocupantes. Se recomienda revisar estrategias metodológicas."
+# --- GENERACIÓN DE TEXTOS AUTOMÁTICOS (NUEVO) ---
 
-# --- FUNCIONES DE WORD ---
+def generar_comentario_individual(alumno, datos_alumno):
+    """Genera el comentario detallado para el alumno"""
+    suspensos = datos_alumno[datos_alumno['Nota'] < 5]
+    num_suspensos = len(suspensos)
+    lista_suspensas = suspensos['Materia'].tolist()
+    
+    txt = f"El alumno tiene actualmente {num_suspensos} materias suspensas."
+    
+    if num_suspensos == 0:
+        txt = "El alumno no tiene ninguna materia suspensa. ¡Excelente trabajo! Se recomienda mantener la constancia en el estudio y, si es posible, ayudar a compañeros en las materias donde destaca."
+    elif num_suspensos == 1:
+        txt += f" La materia pendiente es: {', '.join(lista_suspensas)}. "
+        txt += "Al ser solo una materia, la recuperación es muy factible. Se recomienda hablar con el profesor de la asignatura para establecer un plan de trabajo específico y reforzar los contenidos base."
+    elif num_suspensos == 2:
+        txt += f" Las materias son: {', '.join(lista_suspensas)}. "
+        txt += "Se encuentra en el límite de la promoción. Es vital organizar un horario de estudio que priorice estas dos asignaturas sin descuidar el resto. Se aconseja asistencia a refuerzos."
+    else:
+        txt += f" Las materias son: {', '.join(lista_suspensas)}. "
+        txt += "La situación es preocupante y compromete la promoción al curso siguiente. Se requiere un cambio radical en los hábitos de estudio, supervisión familiar diaria y tutorías urgentes con el equipo docente."
+        
+    return txt
+
+def generar_valoracion_detallada(res):
+    """Genera la valoración general del grupo"""
+    txt = f"El grupo presenta una nota media global de {res['media_grupo']:.2f}. "
+    
+    # Análisis de promoción
+    if res['pct_pasan'] >= 85:
+        txt += "El nivel de promoción es excelente, con la gran mayoría del alumnado superando los objetivos. Esto indica un grupo con buena dinámica de trabajo y adquisición de competencias. "
+    elif res['pct_pasan'] >= 70:
+        txt += "El nivel de promoción es satisfactorio. La mayoría del grupo avanza adecuadamente, aunque existe un sector que requiere seguimiento. "
+    else:
+        txt += "El nivel de promoción es bajo, lo que alerta sobre dificultades generalizadas en el aprendizaje o adaptación al curso. "
+    
+    # Análisis de suspensos
+    if res['pct_mas_dos'] > 20:
+        txt += f"Preocupa especialmente que un {res['pct_mas_dos']:.1f}% de alumnos acumula más de dos suspensos, lo que indica riesgo de abandono o repetición. Se deben plantear medidas de refuerzo colectivo. "
+    elif res['pct_cero'] > 50:
+        txt += "Destaca positivamente que más de la mitad de la clase ha aprobado todas las materias. "
+        
+    txt += "Se recomienda mantener la comunicación con las familias de los alumnos con dificultades y reforzar las materias con medias más bajas."
+    return txt
+
+# --- FUNCIONES DE WORD (ACTUALIZADAS) ---
 
 def add_alumno_to_doc(doc, alumno, datos_alumno, media, suspensos, stats_mat):
     doc.add_heading(f'Informe Individual: {alumno}', 0)
     doc.add_paragraph(f"Nota Media: {media:.2f} | Materias Suspensas: {suspensos}").alignment = WD_ALIGN_PARAGRAPH.CENTER
     
+    # 1. Comentario detallado (NUEVO)
+    doc.add_heading('Análisis y Recomendaciones', level=2)
+    comentario = generar_comentario_individual(alumno, datos_alumno)
+    p = doc.add_paragraph(comentario)
+    p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+    
+    # 2. Tabla comparativa
+    doc.add_heading('Detalle de Calificaciones', level=2)
     t = doc.add_table(rows=1, cols=4)
     t.style = 'Table Grid'
     hdr = t.rows[0].cells
@@ -142,6 +180,7 @@ def add_alumno_to_doc(doc, alumno, datos_alumno, media, suspensos, stats_mat):
         c[3].text = f"{dif:+.2f}"
         if row['Nota'] < 5:
             c[1].paragraphs[0].runs[0].font.color.rgb = RGBColor(255,0,0)
+            c[1].paragraphs[0].runs[0].bold = True
 
 def crear_informe_individual(alumno, datos_alumno, media, suspensos, stats_mat):
     doc = Document()
@@ -184,10 +223,10 @@ def generate_global_report(datos_resumen, plots, ranking_materias, centro, grupo
 
     doc.add_paragraph("-" * 30)
     p2 = doc.add_paragraph()
-    p2.add_run(f"• Promocionan: {datos_resumen['pasan']} ({datos_resumen['pct_pasan']:.1f}%)\n").bold = True
-    p2.add_run(f"• No promocionan: {datos_resumen['no_pasan']} ({datos_resumen['pct_no_pasan']:.1f}%)").bold = True
+    p2.add_run(f"• Promocionan (0-2 suspensos): {datos_resumen['pasan']} ({datos_resumen['pct_pasan']:.1f}%)\n").bold = True
+    p2.add_run(f"• No promocionan (>2 suspensos): {datos_resumen['no_pasan']} ({datos_resumen['pct_no_pasan']:.1f}%)").bold = True
 
-    doc.add_heading('3. Valoración', 1)
+    doc.add_heading('3. Valoración General del Grupo', 1)
     doc.add_paragraph(datos_resumen['valoracion']).italic = True
 
     doc.add_heading('4. Análisis por Materias', 1)
@@ -203,7 +242,17 @@ def generate_global_report(datos_resumen, plots, ranking_materias, centro, grupo
         c[3].text = str(row['Suspensos']); c[4].text = f"{row['Pct_Suspensos']:.1f}%"; c[5].text = f"{row['Media']:.2f}"
 
     doc.add_heading('5. Gráficas', 1)
-    for p in plots: doc.add_picture(p, width=Inches(6))
+    # Tabla para organizar gráficas 2x2
+    t_graf = doc.add_table(rows=2, cols=2)
+    t_graf.autofit = True
+    # Insertar imágenes
+    r1 = t_graf.rows[0].cells
+    r1[0].paragraphs[0].add_run().add_picture(plots[0], width=Inches(4.5)) # Pie
+    r1[1].paragraphs[0].add_run().add_picture(plots[3], width=Inches(4.5)) # Barras Promoción (NUEVA)
+    
+    r2 = t_graf.rows[1].cells
+    r2[0].paragraphs[0].add_run().add_picture(plots[2], width=Inches(4.5)) # Media Materias
+    r2[1].paragraphs[0].add_run().add_picture(plots[1], width=Inches(4.5)) # Distribución suspensos
 
     bio = io.BytesIO(); doc.save(bio); bio.seek(0)
     return bio
@@ -237,7 +286,6 @@ with st.sidebar:
                             df_t = d
                         except: pass
                     elif f.name.endswith('.pdf'):
-                        # --- AQUÍ USAMOS LA FUNCIÓN MEJORADA ---
                         txt = extract_text_with_pdfplumber(f)
                         if txt: df_t = process_data_with_ai(txt, api_key, f.name)
                     elif 'doc' in f.name:
@@ -262,20 +310,16 @@ col_b2.info(f"👥 **Grupo:** {grupo}")
 col_b3.info(f"📅 **Curso:** {curso}")
 
 if st.session_state.data is not None:
-    # --- CORRECCIÓN DE COLUMNAS ---
+    # CORRECCIÓN DE COLUMNAS
     st.session_state.data.columns = st.session_state.data.columns.str.strip()
     cols_map = {
         'Student': 'Alumno', 'Nombre': 'Alumno', 'Apellidos y Nombre': 'Alumno',
-        'Subject': 'Materia', 'Asignatura': 'Materia',
-        'Grade': 'Nota', 'Calificacion': 'Nota'
+        'Subject': 'Materia', 'Asignatura': 'Materia', 'Grade': 'Nota'
     }
     st.session_state.data.rename(columns=cols_map, inplace=True)
 
-    required_cols = ['Alumno', 'Materia', 'Nota']
-    missing = [c for c in required_cols if c not in st.session_state.data.columns]
-    
-    if missing:
-        st.error(f"❌ Error: La IA no encontró las columnas correctas. Faltan: {missing}.")
+    if 'Alumno' not in st.session_state.data.columns:
+        st.error("❌ Error de columnas. Intenta subir de nuevo.")
     else:
         df = st.session_state.data.drop_duplicates(subset=['Alumno', 'Materia'], keep='last')
         df['Nota'] = pd.to_numeric(df['Nota'], errors='coerce')
@@ -298,10 +342,8 @@ if st.session_state.data is not None:
         
         total_alumnos = len(stats_al)
         media_grupo = df['Nota'].mean()
-        max_media = stats_al['Media'].max()
-        min_media = stats_al['Media'].min()
-        mejores = stats_al[stats_al['Media'] == max_media]['Alumno'].tolist()
-        peores = stats_al[stats_al['Media'] == min_media]['Alumno'].tolist()
+        mejores = stats_al[stats_al['Media'] == stats_al['Media'].max()]['Alumno'].tolist()
+        peores = stats_al[stats_al['Media'] == stats_al['Media'].min()]['Alumno'].tolist()
         
         cero = stats_al[stats_al['Suspensos'] == 0].shape[0]
         uno = stats_al[stats_al['Suspensos'] == 1].shape[0]
@@ -314,7 +356,6 @@ if st.session_state.data is not None:
         
         res = {
             'total_alumnos': total_alumnos, 'media_grupo': media_grupo,
-            'max_media': max_media, 'min_media': min_media,
             'mejores_alumnos': mejores, 'peores_alumnos': peores,
             'cero': cero, 'pct_cero': (cero/base)*100,
             'uno': uno, 'pct_uno': (uno/base)*100,
@@ -322,63 +363,87 @@ if st.session_state.data is not None:
             'mas_dos': mas_dos, 'pct_mas_dos': (mas_dos/base)*100,
             'pasan': pasan, 'pct_pasan': (pasan/base)*100,
             'no_pasan': no_pasan, 'pct_no_pasan': (no_pasan/base)*100,
-            'valoracion': obtener_valoracion((pasan/base)*100)
         }
+        res['valoracion'] = generar_valoracion_detallada(res)
 
         # VISUALIZACIÓN
         tab1, tab2, tab3, tab4 = st.tabs(["📊 Informe General", "📚 Por Materias", "🎓 Por Alumnos", "📄 Descargas"])
         
         with tab1:
-            st.subheader("1. Datos Generales")
-            st.write(f"**a) Grupo:** {grupo} | **b) Alumnos:** {total_alumnos} | **c) Media:** {media_grupo:.2f}")
-            st.write(f"**d) Mejor Media:** {', '.join(mejores)} ({max_media:.2f})")
-            st.write(f"**e) Peor Media:** {', '.join(peores)} ({min_media:.2f})")
+            st.subheader("Datos Generales")
+            c1,c2,c3 = st.columns(3)
+            c1.metric("Alumnos", total_alumnos); c2.metric("Media Grupo", f"{media_grupo:.2f}")
+            c3.metric("Promoción", f"{res['pct_pasan']:.1f}%")
             
-            st.markdown("---")
-            c1,c2,c3,c4 = st.columns(4)
-            c1.metric("Todo Aprobado", f"{cero} ({res['pct_cero']:.1f}%)")
-            c2.metric("1 Suspenso", f"{uno} ({res['pct_uno']:.1f}%)")
-            c3.metric("2 Suspensos", f"{dos} ({res['pct_dos']:.1f}%)")
-            c4.metric(">2 Suspensos", f"{mas_dos} ({res['pct_mas_dos']:.1f}%)", delta_color="inverse")
+            st.markdown(f"**Valoración:** _{res['valoracion']}_")
             
-            st.success(f"✅ PROMOCIONAN: {pasan} ({res['pct_pasan']:.1f}%)")
-            st.info(f"📝 Valoración: {res['valoracion']}")
-            
+            # --- GRÁFICAS MEJORADAS ---
             g1, g2 = st.columns(2)
             with g1:
-                fig, ax = plt.subplots()
-                ax.pie([pasan, no_pasan], labels=['Sí', 'No'], autopct='%1.1f%%', colors=['#2ecc71', '#e74c3c'])
-                ax.set_title("Promoción")
+                # 1. Pie Chart
+                fig, ax = plt.subplots(figsize=(5,4))
+                ax.pie([pasan, no_pasan], labels=['Promocionan', 'No'], autopct='%1.1f%%', colors=['#2ecc71', '#e74c3c'], startangle=90)
+                ax.set_title("Ratio de Promoción")
                 st.pyplot(fig)
+                
             with g2:
-                fig2, ax2 = plt.subplots()
-                ax2.bar(['0','1','2','>2'], [cero, uno, dos, mas_dos], color='#3498db')
-                ax2.set_title("Suspensos")
+                # 2. Distribución Suspensos
+                fig2, ax2 = plt.subplots(figsize=(5,4))
+                bars = ax2.bar(['0', '1', '2', '>2'], [cero, uno, dos, mas_dos], color='#3498db')
+                ax2.bar_label(bars)
+                ax2.set_title("Distribución de Suspensos")
                 st.pyplot(fig2)
+                
+            # 3. NUEVA GRÁFICA DE BARRAS PROMOCIÓN
+            st.write("---")
+            st.subheader("Detalle de Promoción")
+            fig4, ax4 = plt.subplots(figsize=(8, 3))
+            labels_prom = ['Promocionan', 'No Promocionan']
+            counts_prom = [pasan, no_pasan]
+            pcts_prom = [res['pct_pasan'], res['pct_no_pasan']]
+            bars4 = ax4.bar(labels_prom, counts_prom, color=['#2ecc71', '#e74c3c'])
+            
+            # Etiquetas con %
+            for bar, pct in zip(bars4, pcts_prom):
+                height = bar.get_height()
+                ax4.text(bar.get_x() + bar.get_width()/2., height,
+                        f'{int(height)}\n({pct:.1f}%)',
+                        ha='center', va='bottom')
+            ax4.set_title("Alumnos que Promocionan vs No Promocionan")
+            st.pyplot(fig4)
 
         with tab2:
-            st.dataframe(stats_mat.style.format({'Pct_Aprobados':'{:.1f}%','Pct_Suspensos':'{:.1f}%','Media':'{:.2f}'}), use_container_width=True)
-            fig3, ax3 = plt.subplots(figsize=(10,4))
-            ax3.bar(stats_mat['Materia'], stats_mat['Media'], color='#9b59b6')
+            st.dataframe(stats_mat.style.format({'Pct_Aprobados':'{:.1f}%','Media':'{:.2f}'}), use_container_width=True)
+            
+            # GRÁFICA NOTA MEDIA CON ETIQUETAS
+            fig3, ax3 = plt.subplots(figsize=(10,5))
+            datos_graf = stats_mat.sort_values('Media', ascending=False)
+            bars3 = ax3.bar(datos_graf['Materia'], datos_graf['Media'], color='#9b59b6')
+            ax3.set_ylim(0, 10.5) # Un poco más de 10 para que quepa el número
             ax3.set_title("Nota Media por Materia")
+            ax3.bar_label(bars3, fmt='%.2f', padding=3) # ETIQUETA ENCIMA DE BARRA
+            plt.xticks(rotation=45)
             st.pyplot(fig3)
 
         with tab3:
-            pivot = df.pivot_table(index='Alumno', columns='Materia', values='Nota', aggfunc='first')
-            st.dataframe(pivot)
+            st.dataframe(df.pivot_table(index='Alumno', columns='Materia', values='Nota', aggfunc='first'))
 
         with tab4:
-            img_buf = io.BytesIO(); fig.savefig(img_buf, format='png'); img_buf.seek(0)
-            img_buf2 = io.BytesIO(); fig2.savefig(img_buf2, format='png'); img_buf2.seek(0)
-            img_buf3 = io.BytesIO(); fig3.savefig(img_buf3, format='png'); img_buf3.seek(0)
+            # Guardar gráficas para Word
+            plots = []
+            for f in [fig, fig2, fig3, fig4]:
+                buf = io.BytesIO(); f.savefig(buf, format='png', bbox_inches='tight'); buf.seek(0)
+                plots.append(buf)
             
-            st.download_button("📄 Informe General (Word)", generate_global_report(res, [img_buf, img_buf2, img_buf3], stats_mat, centro, grupo), f"Informe_{grupo}.docx", type="primary")
-            st.markdown("---")
+            st.download_button("📄 Informe General (Word)", generate_global_report(res, plots, stats_mat, centro, grupo), f"Informe_{grupo}.docx", type="primary")
+            
             c_izq, c_der = st.columns(2)
             with c_izq:
                 sel = st.selectbox("Individual", stats_al['Alumno'].unique())
                 if sel:
                     inf = stats_al[stats_al['Alumno']==sel].iloc[0]
+                    # Mostrar el comentario generado en pantalla también
+                    st.info(generar_comentario_individual(sel, df[df['Alumno']==sel]))
                     st.download_button(f"Descargar {sel}", crear_informe_individual(sel, df[df['Alumno']==sel], inf['Media'], inf['Suspensos'], stats_mat), f"{sel}.docx")
             with c_der:
                 if st.button("Generar Todos"):
