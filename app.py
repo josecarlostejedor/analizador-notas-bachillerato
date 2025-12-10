@@ -118,8 +118,10 @@ def crear_informe_individual(alumno, datos_alumno, media, suspensos):
         c[1].text = str(row['Nota'])
         if row['Nota'] < 5:
             # Poner en rojo si suspende
-            run = c[1].paragraphs[0].runs[0]
-            run.font.color.rgb = RGBColor(255, 0, 0)
+            try:
+                run = c[1].paragraphs[0].runs[0]
+                run.font.color.rgb = RGBColor(255, 0, 0)
+            except: pass
             
     bio = io.BytesIO()
     doc.save(bio)
@@ -180,7 +182,6 @@ with st.sidebar:
         key=f"up_{st.session_state.uploader_key}"
     )
     
-    # --- CORRECCIÓN AQUÍ: Usamos 'is None' en lugar de 'not' ---
     if uploaded_files and st.session_state.data is None:
         if st.button("Analizar Archivos", type="primary"):
             if not api_key:
@@ -227,7 +228,9 @@ col_b2.info(f"👥 **Grupo:** {grupo}")
 col_b3.info(f"📅 **Curso:** {curso}")
 
 if st.session_state.data is not None:
-    df = st.session_state.data
+    # --- CORRECCIÓN DE DUPLICADOS AQUÍ ---
+    # Limpiamos duplicados exactos y forzamos numérico
+    df = st.session_state.data.drop_duplicates(subset=['Alumno', 'Materia'], keep='last')
     df['Nota'] = pd.to_numeric(df['Nota'], errors='coerce')
     
     # CÁLCULOS
@@ -248,8 +251,16 @@ if st.session_state.data is not None:
     no_pasan = total_alumnos - pasan
     pct_pasan = (pasan/total_alumnos)*100 if total_alumnos > 0 else 0
     
-    mejor_alumno = stats_al.loc[stats_al['Media'].idxmax()]
-    peor_materia = stats_mat.loc[stats_mat['Suspensos'].idxmax()]
+    # Verificar que existen datos antes de calcular máximos
+    if not stats_al.empty:
+        mejor_alumno = stats_al.loc[stats_al['Media'].idxmax()]
+    else:
+        mejor_alumno = pd.Series({'Alumno': 'N/A', 'Media': 0})
+
+    if not stats_mat.empty:
+        peor_materia = stats_mat.loc[stats_mat['Suspensos'].idxmax()]
+    else:
+        peor_materia = pd.Series({'Materia': 'N/A', 'Suspensos': 0})
     
     # --- PESTAÑAS ---
     tab1, tab2, tab3, tab4 = st.tabs(["📊 Informe General", "📚 Por Materias", "🎓 Por Alumnos", "📄 Informes PDF"])
@@ -309,8 +320,9 @@ if st.session_state.data is not None:
             st.dataframe(stats_mat.sort_values('Suspensos', ascending=False), use_container_width=True)
         with col_m2:
             st.info(f"📉 **Más difícil:** {peor_materia['Materia']} ({peor_materia['Suspensos']} suspensos)")
-            mejor_mat = stats_mat.loc[stats_mat['Media'].idxmax()]
-            st.success(f"📈 **Mejor media:** {mejor_mat['Materia']} ({mejor_mat['Media']:.2f})")
+            if not stats_mat.empty:
+                mejor_mat = stats_mat.loc[stats_mat['Media'].idxmax()]
+                st.success(f"📈 **Mejor media:** {mejor_mat['Materia']} ({mejor_mat['Media']:.2f})")
 
     # 3. POR ALUMNOS
     with tab3:
@@ -318,7 +330,8 @@ if st.session_state.data is not None:
         st.dataframe(stats_al.sort_values('Suspensos'), use_container_width=True)
         
         st.subheader("Detalle de Notas (Todos)")
-        pivot = df.pivot(index='Alumno', columns='Materia', values='Nota')
+        # --- CORRECCIÓN AQUÍ: Usamos pivot_table en lugar de pivot ---
+        pivot = df.pivot_table(index='Alumno', columns='Materia', values='Nota', aggfunc='first')
         st.dataframe(pivot)
 
     # 4. INFORMES INDIVIDUALES
