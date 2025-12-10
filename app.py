@@ -7,7 +7,7 @@ from docx.enum.section import WD_ORIENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 import openai
 import io
-import PyPDF2
+import pdfplumber
 import docx
 
 # --- CONFIGURACIÓN DE PÁGINA ---
@@ -64,15 +64,26 @@ def reiniciar_app():
     st.session_state.uploader_key += 1
     st.rerun()
 
-# --- FUNCIONES DE EXTRACCIÓN ---
-def extract_text_from_pdf(file):
+# --- NUEVA FUNCIÓN DE EXTRACCIÓN CON PDFPLUMBER ---
+def extract_table_data_from_pdf(file):
+    """Extrae datos de tablas preservando la fila"""
+    text_content = ""
     try:
-        pdf_reader = PyPDF2.PdfReader(file)
-        text = ""
-        for page in pdf_reader.pages:
-            text += page.extract_text() or ""
-        return text
-    except: return ""
+        with pdfplumber.open(file) as pdf:
+            for page in pdf.pages:
+                # Extraer tablas
+                tables = page.extract_tables()
+                for table in tables:
+                    for row in table:
+                        # Limpiar celdas vacías (None) y unir con barras
+                        clean_row = [str(cell).replace("\n", " ") if cell is not None else "" for cell in row]
+                        # Solo añadimos filas que tengan contenido real
+                        if any(len(c) > 0 for c in clean_row):
+                            text_content += " | ".join(clean_row) + "\n"
+        return text_content
+    except Exception as e:
+        st.error(f"Error leyendo PDF: {e}")
+        return ""
 
 def extract_text_from_docx(file):
     try:
@@ -80,46 +91,39 @@ def extract_text_from_docx(file):
         return "\n".join([para.text for para in doc.paragraphs])
     except: return ""
 
-# --- MODIFICACIÓN IMPORTANTE AQUÍ: PROMPT MEJORADO ---
 def process_data_with_ai(text_data, api_key, filename):
     if not text_data: return None
     client = openai.OpenAI(api_key=api_key)
     
-    # Prompt específico para Actas de Evaluación desordenadas
+    # Prompt ajustado para recibir tablas pre-procesadas
     prompt = f"""
-    Analiza este texto extraído de un PDF de acta de evaluación ('{filename}').
-    
-    PROBLEMA DEL FORMATO: 
-    En este tipo de documentos, a menudo aparece primero la lista de alumnos con sus asignaturas, Y AL FINAL DEL TEXTO aparece un bloque de números separados que son las notas.
+    Analiza esta tabla extraída de un acta de evaluación ('{filename}').
+    Las filas están separadas por saltos de línea y las columnas por '|'.
     
     TAREA:
-    1. Identifica la lista de alumnos y sus asignaturas (ej: EF, FILO, ING1...).
-    2. Identifica el bloque de números al final del texto.
-    3. Asocia secuencialmente: La primera fila de números corresponde al primer alumno, la segunda al segundo, etc.
-    4. Ignora alumnos que no tengan notas numéricas asociadas.
+    Extrae las calificaciones en formato CSV con columnas: "Alumno", "Materia", "Nota".
     
-    SALIDA OBLIGATORIA:
-    Devuelve EXCLUSIVAMENTE un CSV con cabeceras: "Alumno", "Materia", "Nota".
-    - Materia: usa las abreviaturas del texto (EF, FILO, LCL1, ING1, etc).
-    - Nota: Número decimal.
+    REGLAS:
+    1. La primera columna suele ser el ID o Nombre del Alumno.
+    2. Las siguientes columnas son Materias (EF, FILO, LCL1, ING1, etc.).
+    3. Ignora filas que sean cabeceras repetidas o pies de página.
+    4. Si una celda está vacía, ignórala.
+    5. Nota: Convierte todo a numérico (Ej: 7, 6.5). Si pone 'EX' o texto, ignóralo o pon nota vacía.
     
-    Texto a analizar:
+    SALIDA: SOLO EL CSV.
+    
+    Datos:
     {text_data[:15000]}
     """
-    
     try:
         response = client.chat.completions.create(
             model="gpt-4o",
-            messages=[{"role": "user", "content": prompt}], 
-            temperature=0
+            messages=[{"role": "user", "content": prompt}], temperature=0
         )
         csv = response.choices[0].message.content.replace("```csv", "").replace("```", "").strip()
-        # Si GPT devuelve texto introductorio, intentamos limpiar
-        if "," not in csv: return None 
+        if "," not in csv: return None
         return pd.read_csv(io.StringIO(csv))
-    except Exception as e: 
-        print(e)
-        return None
+    except: return None
 
 # --- LÓGICA DE ANÁLISIS CUALITATIVO ---
 def generar_texto_analisis(alumno, datos_alumno, stats_mat):
@@ -287,7 +291,8 @@ with st.sidebar:
                             df_t = d
                         except: pass
                     elif f.name.endswith('.pdf'):
-                        txt = extract_text_from_pdf(f)
+                        # --- AQUÍ USAMOS LA NUEVA FUNCIÓN ---
+                        txt = extract_table_data_from_pdf(f) 
                         if txt: df_t = process_data_with_ai(txt, api_key, f.name)
                     elif 'doc' in f.name:
                         txt = extract_text_from_docx(f)
