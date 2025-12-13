@@ -41,6 +41,11 @@ st.markdown("""
         padding: 1rem;
         color: #0f5132;
     }
+    /* Resaltar celdas editables */
+    div[data-testid="stDataEditor"] {
+        border: 2px solid #4e8cff;
+        border-radius: 5px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -55,9 +60,8 @@ def reiniciar_app():
     st.session_state.uploader_key += 1
     st.rerun()
 
-# --- FUNCIONES DE EXTRACCIÓN (INTACTAS) ---
+# --- FUNCIONES DE EXTRACCIÓN ---
 def extract_text_with_pdfplumber(file):
-    """Extrae TODO el texto manteniendo la disposición visual aproximada"""
     text_content = ""
     try:
         with pdfplumber.open(file) as pdf:
@@ -77,19 +81,21 @@ def process_data_with_ai(text_data, api_key, filename):
     if not text_data: return None
     client = openai.OpenAI(api_key=api_key)
     
+    # PROMPT MEJORADO PARA EVITAR CONFUSIÓN CON ÍNDICES (1, 2, 3...)
     prompt = f"""
     Analiza el siguiente texto de un acta de evaluación ('{filename}').
     
     ATENCIÓN AL FORMATO:
-    1. Al principio aparece una lista de alumnos con asignaturas (ej: EF, FILO, ING1...).
-    2. A menudo, LAS NOTAS (números) aparecen AL FINAL DEL BLOQUE DE TEXTO, separadas de los nombres.
-    3. Tu tarea es ASOCIAR la primera fila de números al primer alumno, la segunda al segundo, etc.
+    1. Al principio aparece una lista de alumnos. CUIDADO: Delante del nombre suele haber un número índice (1, 2, 3...). NO confundas ese número con una nota.
+       Ejemplo: "1 ANTHONY..." -> El '1' es el índice, ignóralo. La nota viene después o al final.
+    2. Las NOTAS (números) suelen aparecer AL FINAL DEL BLOQUE DE TEXTO, separadas de los nombres.
+    3. Tu tarea es ASOCIAR la primera fila de notas al primer alumno, la segunda al segundo, etc.
     
     TAREA:
     Genera un CSV con columnas: "Alumno", "Materia", "Nota".
     REGLAS:
     - Materia: Usa abreviaturas (EF, ING1, etc).
-    - Nota: Numérico.
+    - Nota: Numérico (0-10). Si ves un número > 10, probablemente sea un código, ignóralo.
     - Devuelve SOLO el CSV.
     
     Texto:
@@ -105,10 +111,8 @@ def process_data_with_ai(text_data, api_key, filename):
         return pd.read_csv(io.StringIO(csv))
     except: return None
 
-# --- GENERACIÓN DE TEXTOS AUTOMÁTICOS (NUEVO) ---
-
+# --- GENERACIÓN DE TEXTOS AUTOMÁTICOS ---
 def generar_comentario_individual(alumno, datos_alumno):
-    """Genera el comentario detallado para el alumno"""
     suspensos = datos_alumno[datos_alumno['Nota'] < 5]
     num_suspensos = len(suspensos)
     lista_suspensas = suspensos['Materia'].tolist()
@@ -126,43 +130,35 @@ def generar_comentario_individual(alumno, datos_alumno):
     else:
         txt += f" Las materias son: {', '.join(lista_suspensas)}. "
         txt += "La situación es preocupante y compromete la promoción al curso siguiente. Se requiere un cambio radical en los hábitos de estudio, supervisión familiar diaria y tutorías urgentes con el equipo docente."
-        
     return txt
 
 def generar_valoracion_detallada(res):
-    """Genera la valoración general del grupo"""
     txt = f"El grupo presenta una nota media global de {res['media_grupo']:.2f}. "
-    
-    # Análisis de promoción
     if res['pct_pasan'] >= 85:
-        txt += "El nivel de promoción es excelente, con la gran mayoría del alumnado superando los objetivos. Esto indica un grupo con buena dinámica de trabajo y adquisición de competencias. "
+        txt += "El nivel de promoción es excelente, con la gran mayoría del alumnado superando los objetivos. Esto indica un grupo con buena dinámica de trabajo. "
     elif res['pct_pasan'] >= 70:
         txt += "El nivel de promoción es satisfactorio. La mayoría del grupo avanza adecuadamente, aunque existe un sector que requiere seguimiento. "
     else:
         txt += "El nivel de promoción es bajo, lo que alerta sobre dificultades generalizadas en el aprendizaje o adaptación al curso. "
     
-    # Análisis de suspensos
     if res['pct_mas_dos'] > 20:
-        txt += f"Preocupa especialmente que un {res['pct_mas_dos']:.1f}% de alumnos acumula más de dos suspensos, lo que indica riesgo de abandono o repetición. Se deben plantear medidas de refuerzo colectivo. "
+        txt += f"Preocupa especialmente que un {res['pct_mas_dos']:.1f}% de alumnos acumula más de dos suspensos. "
     elif res['pct_cero'] > 50:
         txt += "Destaca positivamente que más de la mitad de la clase ha aprobado todas las materias. "
         
     txt += "Se recomienda mantener la comunicación con las familias de los alumnos con dificultades y reforzar las materias con medias más bajas."
     return txt
 
-# --- FUNCIONES DE WORD (ACTUALIZADAS) ---
-
+# --- FUNCIONES DE WORD ---
 def add_alumno_to_doc(doc, alumno, datos_alumno, media, suspensos, stats_mat):
     doc.add_heading(f'Informe Individual: {alumno}', 0)
     doc.add_paragraph(f"Nota Media: {media:.2f} | Materias Suspensas: {suspensos}").alignment = WD_ALIGN_PARAGRAPH.CENTER
     
-    # 1. Comentario detallado (NUEVO)
     doc.add_heading('Análisis y Recomendaciones', level=2)
     comentario = generar_comentario_individual(alumno, datos_alumno)
     p = doc.add_paragraph(comentario)
     p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
     
-    # 2. Tabla comparativa
     doc.add_heading('Detalle de Calificaciones', level=2)
     t = doc.add_table(rows=1, cols=4)
     t.style = 'Table Grid'
@@ -242,17 +238,14 @@ def generate_global_report(datos_resumen, plots, ranking_materias, centro, grupo
         c[3].text = str(row['Suspensos']); c[4].text = f"{row['Pct_Suspensos']:.1f}%"; c[5].text = f"{row['Media']:.2f}"
 
     doc.add_heading('5. Gráficas', 1)
-    # Tabla para organizar gráficas 2x2
     t_graf = doc.add_table(rows=2, cols=2)
     t_graf.autofit = True
-    # Insertar imágenes
     r1 = t_graf.rows[0].cells
-    r1[0].paragraphs[0].add_run().add_picture(plots[0], width=Inches(4.5)) # Pie
-    r1[1].paragraphs[0].add_run().add_picture(plots[3], width=Inches(4.5)) # Barras Promoción (NUEVA)
-    
+    r1[0].paragraphs[0].add_run().add_picture(plots[0], width=Inches(4.5))
+    r1[1].paragraphs[0].add_run().add_picture(plots[3], width=Inches(4.5))
     r2 = t_graf.rows[1].cells
-    r2[0].paragraphs[0].add_run().add_picture(plots[2], width=Inches(4.5)) # Media Materias
-    r2[1].paragraphs[0].add_run().add_picture(plots[1], width=Inches(4.5)) # Distribución suspensos
+    r2[0].paragraphs[0].add_run().add_picture(plots[2], width=Inches(4.5))
+    r2[1].paragraphs[0].add_run().add_picture(plots[1], width=Inches(4.5))
 
     bio = io.BytesIO(); doc.save(bio); bio.seek(0)
     return bio
@@ -310,16 +303,13 @@ col_b2.info(f"👥 **Grupo:** {grupo}")
 col_b3.info(f"📅 **Curso:** {curso}")
 
 if st.session_state.data is not None:
-    # CORRECCIÓN DE COLUMNAS
+    # Corrección de columnas
     st.session_state.data.columns = st.session_state.data.columns.str.strip()
-    cols_map = {
-        'Student': 'Alumno', 'Nombre': 'Alumno', 'Apellidos y Nombre': 'Alumno',
-        'Subject': 'Materia', 'Asignatura': 'Materia', 'Grade': 'Nota'
-    }
+    cols_map = {'Student': 'Alumno', 'Nombre': 'Alumno', 'Apellidos y Nombre': 'Alumno', 'Subject': 'Materia', 'Asignatura': 'Materia', 'Grade': 'Nota'}
     st.session_state.data.rename(columns=cols_map, inplace=True)
 
     if 'Alumno' not in st.session_state.data.columns:
-        st.error("❌ Error de columnas. Intenta subir de nuevo.")
+        st.error("❌ Error de columnas.")
     else:
         df = st.session_state.data.drop_duplicates(subset=['Alumno', 'Materia'], keep='last')
         df['Nota'] = pd.to_numeric(df['Nota'], errors='coerce')
@@ -367,7 +357,7 @@ if st.session_state.data is not None:
         res['valoracion'] = generar_valoracion_detallada(res)
 
         # VISUALIZACIÓN
-        tab1, tab2, tab3, tab4 = st.tabs(["📊 Informe General", "📚 Por Materias", "🎓 Por Alumnos", "📄 Descargas"])
+        tab1, tab2, tab3, tab4 = st.tabs(["📊 Informe General", "📚 Por Materias", "🎓 Por Alumnos (Editor)", "📄 Descargas"])
         
         with tab1:
             st.subheader("Datos Generales")
@@ -377,59 +367,62 @@ if st.session_state.data is not None:
             
             st.markdown(f"**Valoración:** _{res['valoracion']}_")
             
-            # --- GRÁFICAS MEJORADAS ---
             g1, g2 = st.columns(2)
             with g1:
-                # 1. Pie Chart
                 fig, ax = plt.subplots(figsize=(5,4))
                 ax.pie([pasan, no_pasan], labels=['Promocionan', 'No'], autopct='%1.1f%%', colors=['#2ecc71', '#e74c3c'], startangle=90)
                 ax.set_title("Ratio de Promoción")
                 st.pyplot(fig)
-                
             with g2:
-                # 2. Distribución Suspensos
                 fig2, ax2 = plt.subplots(figsize=(5,4))
                 bars = ax2.bar(['0', '1', '2', '>2'], [cero, uno, dos, mas_dos], color='#3498db')
                 ax2.bar_label(bars)
                 ax2.set_title("Distribución de Suspensos")
                 st.pyplot(fig2)
                 
-            # 3. NUEVA GRÁFICA DE BARRAS PROMOCIÓN
             st.write("---")
-            st.subheader("Detalle de Promoción")
             fig4, ax4 = plt.subplots(figsize=(8, 3))
             labels_prom = ['Promocionan', 'No Promocionan']
             counts_prom = [pasan, no_pasan]
             pcts_prom = [res['pct_pasan'], res['pct_no_pasan']]
             bars4 = ax4.bar(labels_prom, counts_prom, color=['#2ecc71', '#e74c3c'])
-            
-            # Etiquetas con %
             for bar, pct in zip(bars4, pcts_prom):
                 height = bar.get_height()
-                ax4.text(bar.get_x() + bar.get_width()/2., height,
-                        f'{int(height)}\n({pct:.1f}%)',
-                        ha='center', va='bottom')
-            ax4.set_title("Alumnos que Promocionan vs No Promocionan")
+                ax4.text(bar.get_x() + bar.get_width()/2., height, f'{int(height)}\n({pct:.1f}%)', ha='center', va='bottom')
+            ax4.set_title("Detalle Promoción")
             st.pyplot(fig4)
 
         with tab2:
             st.dataframe(stats_mat.style.format({'Pct_Aprobados':'{:.1f}%','Media':'{:.2f}'}), use_container_width=True)
-            
-            # GRÁFICA NOTA MEDIA CON ETIQUETAS
             fig3, ax3 = plt.subplots(figsize=(10,5))
             datos_graf = stats_mat.sort_values('Media', ascending=False)
             bars3 = ax3.bar(datos_graf['Materia'], datos_graf['Media'], color='#9b59b6')
-            ax3.set_ylim(0, 10.5) # Un poco más de 10 para que quepa el número
+            ax3.set_ylim(0, 10.5)
             ax3.set_title("Nota Media por Materia")
-            ax3.bar_label(bars3, fmt='%.2f', padding=3) # ETIQUETA ENCIMA DE BARRA
+            ax3.bar_label(bars3, fmt='%.2f', padding=3)
             plt.xticks(rotation=45)
             st.pyplot(fig3)
 
         with tab3:
-            st.dataframe(df.pivot_table(index='Alumno', columns='Materia', values='Nota', aggfunc='first'))
+            st.markdown("### 📝 Editor de Calificaciones")
+            st.info("Haz doble clic en una celda para corregir un dato. Al terminar, pulsa el botón rojo abajo.")
+            
+            # CREAR TABLA PIVOT EDITABLE
+            pivot_df = df.pivot_table(index='Alumno', columns='Materia', values='Nota', aggfunc='first')
+            edited_df = st.data_editor(pivot_df, use_container_width=True, num_rows="dynamic")
+            
+            # BOTÓN DE RECALCULAR
+            if st.button("🔄 Recalcular Análisis con Datos Corregidos", type="primary"):
+                # Convertir de vuelta a formato largo (Alumno, Materia, Nota)
+                try:
+                    new_long_df = edited_df.reset_index().melt(id_vars='Alumno', var_name='Materia', value_name='Nota')
+                    new_long_df.dropna(subset=['Nota'], inplace=True) # Eliminar vacíos
+                    st.session_state.data = new_long_df
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error al guardar datos: {e}")
 
         with tab4:
-            # Guardar gráficas para Word
             plots = []
             for f in [fig, fig2, fig3, fig4]:
                 buf = io.BytesIO(); f.savefig(buf, format='png', bbox_inches='tight'); buf.seek(0)
@@ -442,7 +435,6 @@ if st.session_state.data is not None:
                 sel = st.selectbox("Individual", stats_al['Alumno'].unique())
                 if sel:
                     inf = stats_al[stats_al['Alumno']==sel].iloc[0]
-                    # Mostrar el comentario generado en pantalla también
                     st.info(generar_comentario_individual(sel, df[df['Alumno']==sel]))
                     st.download_button(f"Descargar {sel}", crear_informe_individual(sel, df[df['Alumno']==sel], inf['Media'], inf['Suspensos'], stats_mat), f"{sel}.docx")
             with c_der:
