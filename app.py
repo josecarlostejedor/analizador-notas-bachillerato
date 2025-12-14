@@ -129,7 +129,7 @@ def generar_valoracion_detallada(res):
         txt += "El nivel de promoción es bajo."
     return txt
 
-# --- FUNCIONES DE WORD EXISTENTES ---
+# --- FUNCIONES DE WORD ---
 def add_alumno_to_doc(doc, alumno, datos_alumno, media, suspensos, stats_mat):
     doc.add_heading(f'Informe Individual: {alumno}', 0)
     doc.add_paragraph(f"Nota Media: {media:.2f} | Materias Suspensas: {suspensos}").alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -180,9 +180,20 @@ def generate_global_report(datos_resumen, plots, ranking_materias, centro, grupo
     doc.add_heading('Datos Generales', 1)
     doc.add_paragraph(f"Media del grupo: {datos_resumen['media_grupo']:.2f}")
     doc.add_paragraph(f"Promoción: {datos_resumen['pasan']} ({datos_resumen['pct_pasan']:.1f}%)")
+    doc.add_paragraph(f"No Promocionan: {datos_resumen['no_pasan']} ({datos_resumen['pct_no_pasan']:.1f}%)")
     
     doc.add_heading('Gráficas', 1)
-    for p in plots: doc.add_picture(p, width=Inches(5))
+    # Tabla 2x2 para las gráficas
+    t = doc.add_table(rows=2, cols=2)
+    t.autofit = True
+    
+    # Insertar imágenes asegurando que existen
+    if len(plots) >= 4:
+        t.rows[0].cells[0].paragraphs[0].add_run().add_picture(plots[0], width=Inches(4.5))
+        t.rows[0].cells[1].paragraphs[0].add_run().add_picture(plots[3], width=Inches(4.5))
+        t.rows[1].cells[0].paragraphs[0].add_run().add_picture(plots[2], width=Inches(4.5))
+        t.rows[1].cells[1].paragraphs[0].add_run().add_picture(plots[1], width=Inches(4.5))
+
     bio = io.BytesIO(); doc.save(bio); bio.seek(0)
     return bio
 
@@ -200,7 +211,7 @@ def generate_parents_report(res, stats_mat, plot_suspensos, plot_pct_materias):
     # Título
     doc.add_heading('RESUMEN DE EVALUACIÓN PARA FAMILIAS', 0).alignment = WD_ALIGN_PARAGRAPH.CENTER
     
-    # Crear Tabla Estructural (1 Fila, 2 Columnas)
+    # Tabla Estructural (1 Fila, 2 Columnas)
     table = doc.add_table(rows=1, cols=2)
     table.autofit = False
     table.columns[0].width = Inches(5)
@@ -229,12 +240,10 @@ def generate_parents_report(res, stats_mat, plot_suspensos, plot_pct_materias):
     # --- COLUMNA 2: GRÁFICAS ---
     cell_graphs = table.rows[0].cells[1]
     
-    # Gráfica 1: Distribución suspensos
     p_g1 = cell_graphs.paragraphs[0]
     p_g1.add_run("1º) Materias no superadas (Distribución):\n").bold = True
     p_g1.add_run().add_picture(plot_suspensos, width=Inches(4.5))
     
-    # Gráfica 2: % Suspensos por materia
     p_g2 = cell_graphs.add_paragraph()
     p_g2.add_run("\n2º) % de Suspensos por Materia:\n").bold = True
     p_g2.add_run().add_picture(plot_pct_materias, width=Inches(4.5))
@@ -335,7 +344,7 @@ if st.session_state.data is not None:
         
         base = total_alumnos if total_alumnos > 0 else 1
         pasan = cero + uno + dos
-        no_pasan = tres + mas_tres # (Si promocionan con 0,1,2)
+        no_pasan = tres + mas_tres
         media_suspensos_grupo = stats_al['Suspensos'].mean()
         
         res = {
@@ -343,18 +352,25 @@ if st.session_state.data is not None:
             'media_suspensos_grupo': media_suspensos_grupo,
             'pasan': pasan, 'pct_pasan': (pasan/base)*100,
             'no_pasan': no_pasan, 'pct_no_pasan': (no_pasan/base)*100,
-            'pct_mas_dos': ((tres+mas_tres)/base)*100 # Para valoración
+            'pct_mas_dos': ((tres+mas_tres)/base)*100
         }
         res['valoracion'] = generar_valoracion_detallada(res)
 
         # TABS
         tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Informe General", "📚 Por Materias", "🎓 Por Alumnos (Editor)", "📄 Informes", "👨‍👩‍👧 Resumen Padres"])
         
-        # 1. GENERAL (Resumido para ahorrar espacio en código)
+        # 1. GENERAL
         with tab1:
             st.metric("Media Grupo", f"{media_grupo:.2f}")
-            # ... (código existente de gráficas) ...
-            fig_pie, ax_pie = plt.subplots(figsize=(4,3)); ax_pie.pie([pasan, no_pasan], labels=['Sí', 'No'], autopct='%1.f%%'); st.pyplot(fig_pie)
+            c1, c2 = st.columns(2)
+            with c1: 
+                fig_pie, ax_pie = plt.subplots(figsize=(4,3))
+                ax_pie.pie([pasan, no_pasan], labels=['Sí', 'No'], autopct='%1.1f%%', colors=['#2ecc71', '#e74c3c'])
+                st.pyplot(fig_pie)
+            with c2:
+                fig_bars, ax_bars = plt.subplots(figsize=(4,3))
+                ax_bars.bar(['0','1','2','3','>3'], [cero, uno, dos, tres, mas_tres], color='#3498db')
+                st.pyplot(fig_bars)
 
         # 2. MATERIAS
         with tab2:
@@ -373,20 +389,46 @@ if st.session_state.data is not None:
                     st.rerun()
                 except: pass
 
-        # 4. INFORMES INDIVIDUALES
+        # 4. INFORMES INDIVIDUALES Y GENERAL (CORREGIDO)
         with tab4:
-            st.write("Generador de informes individuales y completos.")
-            plots_general = [io.BytesIO()] # Placeholder para simplificar este bloque
+            st.write("Generador de informes.")
+            
+            # Regenerar gráficas generales para el Word
+            # 1. Pie
+            fig_p, ax_p = plt.subplots(figsize=(5,4))
+            ax_p.pie([pasan, no_pasan], labels=['Sí', 'No'], autopct='%1.1f%%', colors=['#2ecc71', '#e74c3c'], startangle=90)
+            
+            # 2. Distribución suspensos
+            fig_d, ax_d = plt.subplots(figsize=(5,4))
+            bars_d = ax_d.bar(['0', '1', '2', '>2'], [cero, uno, dos, tres+mas_tres], color='#3498db')
+            ax_d.bar_label(bars_d)
+
+            # 3. Media Notas
+            fig_m, ax_m = plt.subplots(figsize=(10,5))
+            d_graf = stats_mat.sort_values('Media', ascending=False)
+            bars_m = ax_m.bar(d_graf['Materia'], d_graf['Media'], color='#9b59b6')
+            ax_m.bar_label(bars_m, fmt='%.2f')
+            plt.xticks(rotation=45)
+
+            # 4. Promocion vs No
+            fig_pr, ax_pr = plt.subplots(figsize=(8,3))
+            ax_pr.bar(['Sí', 'No'], [pasan, no_pasan], color=['green', 'red'])
+
+            plots_general = []
+            for f in [fig_p, fig_d, fig_m, fig_pr]:
+                buf = io.BytesIO()
+                f.savefig(buf, format='png', bbox_inches='tight')
+                buf.seek(0)
+                plots_general.append(buf)
+
             if st.button("Generar Informe General Word"):
                 st.download_button("Descargar", generate_global_report(res, plots_general, stats_mat, centro, grupo), f"Global_{grupo}.docx")
 
-        # 5. RESUMEN PADRES (NUEVO)
+        # 5. RESUMEN PADRES
         with tab5:
             st.header("Resumen para Reunión de Padres")
-            st.info("Este apartado genera un documento específico de 2 columnas con gráficas de rendimiento.")
             
-            # Generar Gráficas Específicas para Padres
-            # Gráfica 1: Distribución 0, 1, 2, 3, >3
+            # Gráfica 1: Distribución suspensos
             fig_padres1, ax_p1 = plt.subplots(figsize=(6, 4))
             labels_p = ['0', '1', '2', '3', '>3']
             vals_p = [cero, uno, dos, tres, mas_tres]
@@ -397,18 +439,15 @@ if st.session_state.data is not None:
             
             # Gráfica 2: % Suspensos por materia
             fig_padres2, ax_p2 = plt.subplots(figsize=(6, 4))
-            # Ordenar por % suspensos
             df_p2 = stats_mat.sort_values('Pct_Suspensos', ascending=True)
             ax_p2.barh(df_p2['Materia'], df_p2['Pct_Suspensos'], color='#3498db')
             ax_p2.set_title("% de Suspensos por Materia")
             ax_p2.set_xlabel("% Suspensos")
             
-            # Mostrar vista previa
             c1, c2 = st.columns(2)
             with c1: st.pyplot(fig_padres1)
             with c2: st.pyplot(fig_padres2)
             
-            # Preparar imágenes para Word
             buf_p1 = io.BytesIO(); fig_padres1.savefig(buf_p1, format='png', bbox_inches='tight'); buf_p1.seek(0)
             buf_p2 = io.BytesIO(); fig_padres2.savefig(buf_p2, format='png', bbox_inches='tight'); buf_p2.seek(0)
             
