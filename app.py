@@ -70,27 +70,40 @@ def extract_text_from_docx(file):
         return "\n".join([para.text for para in doc.paragraphs])
     except: return ""
 
+# --- NUEVA FUNCIÓN PARA CORREGIR EL NOMBRE ---
+def formatear_nombre_completo(texto):
+    """Convierte 'AGUADERO LUCAS, JULIA' en 'JULIA AGUADERO LUCAS'"""
+    if isinstance(texto, str) and ',' in texto:
+        partes = texto.split(',')
+        if len(partes) >= 2:
+            # partes[0] son los apellidos, partes[1] es el nombre
+            apellidos = partes[0].strip()
+            nombre = partes[1].strip()
+            return f"{nombre} {apellidos}"
+    return texto
+
 def process_data_with_ai(text_data, api_key, filename):
     if not text_data: return None
     client = openai.OpenAI(api_key=api_key)
     
-    # PROMPT AJUSTADO PARA GARANTIZAR APELLIDOS Y NOMBRE
+    # PROMPT REFORZADO PARA EXTRAER APELLIDOS CORRECTAMENTE
     prompt = f"""
     Analiza el siguiente texto de un acta de evaluación ('{filename}').
     
-    ATENCIÓN AL FORMATO:
-    1. Al principio aparece una lista de alumnos. CUIDADO: Delante del nombre suele haber un número índice (1, 2, 3...). NO confundas ese número con una nota.
-    2. Las NOTAS (números) suelen aparecer AL FINAL DEL BLOQUE DE TEXTO.
-    3. Asocia la primera fila de notas al primer alumno, etc.
+    ATENCIÓN AL FORMATO DE NOMBRES:
+    Los alumnos aparecen listados generalmente como: "APELLIDO1 APELLIDO2, NOMBRE".
+    Ejemplo: "AGUADERO LUCAS, JULIA".
+    
+    INSTRUCCIONES CRÍTICAS:
+    1. En la columna 'Alumno', extrae la cadena COMPLETA incluyendo la coma. NO extraigas solo el nombre. Quiero "AGUADERO LUCAS, JULIA", no solo "JULIA".
+    2. Ignora los números índices (1, 2, 3...) delante del nombre.
+    3. Las NOTAS (números) suelen estar separadas al final del bloque. Asócialas en orden.
     
     TAREA:
     Genera un CSV con columnas: "Alumno", "Materia", "Nota".
-    
-    REGLAS IMPORTANTES:
-    - Columna 'Alumno': DEBE incluir APELLIDOS Y NOMBRE COMPLETOS tal y como aparecen en el documento (Ej: "GARCÍA PÉREZ, JUAN"). No resumas el nombre.
-    - Materia: Usa abreviaturas (EF, ING1, etc).
+    - Materia: Abreviaturas (ING1, etc).
     - Nota: Numérico (0-10).
-    - Devuelve SOLO el CSV.
+    - SOLO CSV.
     
     Texto:
     {text_data[:15000]}
@@ -102,7 +115,15 @@ def process_data_with_ai(text_data, api_key, filename):
         )
         csv = response.choices[0].message.content.replace("```csv", "").replace("```", "").strip()
         if "," not in csv: return None
-        return pd.read_csv(io.StringIO(csv))
+        
+        # Crear DataFrame
+        df = pd.read_csv(io.StringIO(csv))
+        
+        # APLICAR LA CORRECCIÓN DE NOMBRE AUTOMÁTICAMENTE AQUÍ
+        if 'Alumno' in df.columns:
+            df['Alumno'] = df['Alumno'].apply(formatear_nombre_completo)
+            
+        return df
     except: return None
 
 # --- GENERACIÓN DE TEXTOS AUTOMÁTICOS ---
@@ -135,17 +156,14 @@ def generar_valoracion_detallada(res):
 
 # --- FUNCIONES DE WORD (INDIVIDUAL DETALLADO) ---
 def add_alumno_to_doc(doc, alumno, datos_alumno, media, suspensos, stats_mat):
-    # Título con Apellidos y Nombre
     doc.add_heading(f'Informe Individual: {alumno}', 0)
     doc.add_paragraph(f"Nota Media: {media:.2f} | Materias Suspensas: {suspensos}").alignment = WD_ALIGN_PARAGRAPH.CENTER
     
-    # 1. Comentario detallado
     doc.add_heading('Análisis y Recomendaciones', level=2)
     comentario = generar_comentario_individual(alumno, datos_alumno)
     p = doc.add_paragraph(comentario)
     p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
     
-    # 2. Tabla comparativa con COLORES
     doc.add_heading('Detalle de Calificaciones', level=2)
     t = doc.add_table(rows=1, cols=4)
     t.style = 'Table Grid'
@@ -162,7 +180,6 @@ def add_alumno_to_doc(doc, alumno, datos_alumno, media, suspensos, stats_mat):
         dif = row['Nota'] - media_c
         c[3].text = f"{dif:+.2f}"
         
-        # Poner en ROJO si suspende
         if row['Nota'] < 5:
             run = c[1].paragraphs[0].runs[0]
             run.font.color.rgb = RGBColor(255, 0, 0)
