@@ -103,6 +103,7 @@ def process_data_with_ai(text_data, api_key, filename):
 
 # --- GENERACIÓN DE TEXTOS AUTOMÁTICOS ---
 def generar_comentario_individual(alumno, datos_alumno):
+    """Genera el texto de consejo para el alumno"""
     suspensos = datos_alumno[datos_alumno['Nota'] < 5]
     num_suspensos = len(suspensos)
     lista_suspensas = suspensos['Materia'].tolist()
@@ -110,34 +111,37 @@ def generar_comentario_individual(alumno, datos_alumno):
     txt = f"El alumno tiene actualmente {num_suspensos} materias suspensas."
     
     if num_suspensos == 0:
-        txt = "El alumno no tiene ninguna materia suspensa. ¡Excelente trabajo! Se recomienda mantener la constancia en el estudio."
+        txt = "El alumno no tiene ninguna materia suspensa. ¡Excelente trabajo! Se recomienda mantener la constancia en el estudio y, si es posible, ayudar a compañeros en las materias donde destaca."
     elif num_suspensos == 1:
-        txt += f" La materia pendiente es: {', '.join(lista_suspensas)}. Recuperación factible, se recomienda plan específico."
+        txt += f" La materia pendiente es: {', '.join(lista_suspensas)}. Al ser solo una materia, la recuperación es muy factible. Se recomienda hablar con el profesor de la asignatura para establecer un plan de trabajo específico."
     elif num_suspensos == 2:
-        txt += f" Las materias son: {', '.join(lista_suspensas)}. Situación límite para la promoción. Se aconseja refuerzo urgente."
+        txt += f" Las materias son: {', '.join(lista_suspensas)}. Se encuentra en el límite de la promoción. Es vital organizar un horario de estudio que priorice estas dos asignaturas sin descuidar el resto."
     else:
-        txt += f" Las materias son: {', '.join(lista_suspensas)}. Situación preocupante que compromete la promoción."
+        txt += f" Las materias son: {', '.join(lista_suspensas)}. La situación es preocupante y compromete la promoción al curso siguiente. Se requiere un cambio radical en los hábitos de estudio y supervisión familiar."
     return txt
 
 def generar_valoracion_detallada(res):
     txt = f"El grupo presenta una nota media global de {res['media_grupo']:.2f}. "
     if res['pct_pasan'] >= 85:
-        txt += "El nivel de promoción es excelente."
+        txt += "El nivel de promoción es excelente, con la gran mayoría del alumnado superando los objetivos."
     elif res['pct_pasan'] >= 70:
-        txt += "El nivel de promoción es satisfactorio."
+        txt += "El nivel de promoción es satisfactorio. La mayoría del grupo avanza adecuadamente."
     else:
-        txt += "El nivel de promoción es bajo."
+        txt += "El nivel de promoción es bajo, lo que alerta sobre dificultades generalizadas."
     return txt
 
-# --- FUNCIONES DE WORD ---
+# --- FUNCIONES DE WORD (INDIVIDUAL DETALLADO) ---
 def add_alumno_to_doc(doc, alumno, datos_alumno, media, suspensos, stats_mat):
     doc.add_heading(f'Informe Individual: {alumno}', 0)
     doc.add_paragraph(f"Nota Media: {media:.2f} | Materias Suspensas: {suspensos}").alignment = WD_ALIGN_PARAGRAPH.CENTER
     
+    # 1. Comentario detallado
     doc.add_heading('Análisis y Recomendaciones', level=2)
-    p = doc.add_paragraph(generar_comentario_individual(alumno, datos_alumno))
+    comentario = generar_comentario_individual(alumno, datos_alumno)
+    p = doc.add_paragraph(comentario)
     p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
     
+    # 2. Tabla comparativa con COLORES
     doc.add_heading('Detalle de Calificaciones', level=2)
     t = doc.add_table(rows=1, cols=4)
     t.style = 'Table Grid'
@@ -153,8 +157,13 @@ def add_alumno_to_doc(doc, alumno, datos_alumno, media, suspensos, stats_mat):
         c[2].text = f"{media_c:.2f}"
         dif = row['Nota'] - media_c
         c[3].text = f"{dif:+.2f}"
+        
+        # Poner en ROJO si suspende
         if row['Nota'] < 5:
-            c[1].paragraphs[0].runs[0].font.color.rgb = RGBColor(255,0,0)
+            # Color rojo al texto de la nota
+            run = c[1].paragraphs[0].runs[0]
+            run.font.color.rgb = RGBColor(255, 0, 0)
+            run.bold = True
 
 def crear_informe_individual(alumno, datos_alumno, media, suspensos, stats_mat):
     doc = Document()
@@ -172,6 +181,7 @@ def generar_informe_todos_alumnos(df, stats_al, stats_mat):
     bio = io.BytesIO(); doc.save(bio); bio.seek(0)
     return bio
 
+# --- FUNCIONES DE WORD (GLOBAL Y PADRES) ---
 def generate_global_report(datos_resumen, plots, ranking_materias, centro, grupo):
     doc = Document()
     s = doc.sections[0]; s.orientation = WD_ORIENT.LANDSCAPE; s.page_width, s.page_height = s.page_height, s.page_width
@@ -181,14 +191,12 @@ def generate_global_report(datos_resumen, plots, ranking_materias, centro, grupo
     doc.add_paragraph(f"Media del grupo: {datos_resumen['media_grupo']:.2f}")
     doc.add_paragraph(f"Promoción: {datos_resumen['pasan']} ({datos_resumen['pct_pasan']:.1f}%)")
     doc.add_paragraph(f"No Promocionan: {datos_resumen['no_pasan']} ({datos_resumen['pct_no_pasan']:.1f}%)")
+    doc.add_paragraph(datos_resumen['valoracion']).italic = True
     
     doc.add_heading('Gráficas', 1)
-    # Tabla 2x2 para las gráficas
-    t = doc.add_table(rows=2, cols=2)
-    t.autofit = True
-    
-    # Insertar imágenes asegurando que existen
     if len(plots) >= 4:
+        t = doc.add_table(rows=2, cols=2)
+        t.autofit = True
         t.rows[0].cells[0].paragraphs[0].add_run().add_picture(plots[0], width=Inches(4.5))
         t.rows[0].cells[1].paragraphs[0].add_run().add_picture(plots[3], width=Inches(4.5))
         t.rows[1].cells[0].paragraphs[0].add_run().add_picture(plots[2], width=Inches(4.5))
@@ -197,10 +205,8 @@ def generate_global_report(datos_resumen, plots, ranking_materias, centro, grupo
     bio = io.BytesIO(); doc.save(bio); bio.seek(0)
     return bio
 
-# --- NUEVA FUNCIÓN: INFORME PADRES ---
 def generate_parents_report(res, stats_mat, plot_suspensos, plot_pct_materias):
     doc = Document()
-    
     # Configurar Apaisado
     section = doc.sections[0]
     section.orientation = WD_ORIENT.LANDSCAPE
@@ -208,20 +214,17 @@ def generate_parents_report(res, stats_mat, plot_suspensos, plot_pct_materias):
     section.page_width = new_width
     section.page_height = new_height
     
-    # Título
     doc.add_heading('RESUMEN DE EVALUACIÓN PARA FAMILIAS', 0).alignment = WD_ALIGN_PARAGRAPH.CENTER
     
-    # Tabla Estructural (1 Fila, 2 Columnas)
     table = doc.add_table(rows=1, cols=2)
     table.autofit = False
     table.columns[0].width = Inches(5)
     table.columns[1].width = Inches(5)
     
-    # --- COLUMNA 1: TEXTO ---
+    # COLUMNA 1
     cell_text = table.rows[0].cells[0]
     p = cell_text.paragraphs[0]
     p.add_run("En esta gráfica vemos el número de materias suspensas en este trimestre, así como una estimación de cuántos alumnos promocionarían.\n\n").italic = True
-    
     p.add_run(f"• Alumnos que promocionan: {res['pasan']} ({res['pct_pasan']:.1f}%)\n")
     p.add_run(f"• Alumnos que no promocionan: {res['no_pasan']} ({res['pct_no_pasan']:.1f}%)\n")
     p.add_run(f"• Media de suspensos del grupo: {res['media_suspensos_grupo']:.2f}\n\n")
@@ -230,16 +233,13 @@ def generate_parents_report(res, stats_mat, plot_suspensos, plot_pct_materias):
     for _, row in stats_mat.iterrows():
         p.add_run(f"- {row['Materia']}: {row['Pct_Aprobados']:.1f}%\n")
     
-    # Más y menos aprobados
     mejor = stats_mat.loc[stats_mat['Pct_Aprobados'].idxmax()]
     peor = stats_mat.loc[stats_mat['Pct_Aprobados'].idxmin()]
-    
     p.add_run(f"\nAsignatura con menos aprobados: {peor['Materia']} ({peor['Pct_Aprobados']:.1f}%)\n").bold = True
     p.add_run(f"Asignatura con más aprobados: {mejor['Materia']} ({mejor['Pct_Aprobados']:.1f}%)\n").bold = True
 
-    # --- COLUMNA 2: GRÁFICAS ---
+    # COLUMNA 2
     cell_graphs = table.rows[0].cells[1]
-    
     p_g1 = cell_graphs.paragraphs[0]
     p_g1.add_run("1º) Materias no superadas (Distribución):\n").bold = True
     p_g1.add_run().add_picture(plot_suspensos, width=Inches(4.5))
@@ -304,7 +304,7 @@ col_b2.info(f"👥 **Grupo:** {grupo}")
 col_b3.info(f"📅 **Curso:** {curso}")
 
 if st.session_state.data is not None:
-    # Corrección de columnas
+    # Corrección columnas
     st.session_state.data.columns = st.session_state.data.columns.str.strip()
     cols_map = {'Student': 'Alumno', 'Nombre': 'Alumno', 'Apellidos y Nombre': 'Alumno', 'Subject': 'Materia', 'Asignatura': 'Materia', 'Grade': 'Nota'}
     st.session_state.data.rename(columns=cols_map, inplace=True)
@@ -333,8 +333,6 @@ if st.session_state.data is not None:
         
         total_alumnos = len(stats_al)
         media_grupo = df['Nota'].mean()
-        mejores = stats_al[stats_al['Media'] == stats_al['Media'].max()]['Alumno'].tolist()
-        peores = stats_al[stats_al['Media'] == stats_al['Media'].min()]['Alumno'].tolist()
         
         cero = stats_al[stats_al['Suspensos'] == 0].shape[0]
         uno = stats_al[stats_al['Suspensos'] == 1].shape[0]
@@ -357,7 +355,7 @@ if st.session_state.data is not None:
         res['valoracion'] = generar_valoracion_detallada(res)
 
         # TABS
-        tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Informe General", "📚 Por Materias", "🎓 Por Alumnos (Editor)", "📄 Informes", "👨‍👩‍👧 Resumen Padres"])
+        tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Informe General", "📚 Por Materias", "🎓 Editor", "📄 Informes Individuales/Grupo", "👨‍👩‍👧 Resumen Padres"])
         
         # 1. GENERAL
         with tab1:
@@ -371,6 +369,19 @@ if st.session_state.data is not None:
                 fig_bars, ax_bars = plt.subplots(figsize=(4,3))
                 ax_bars.bar(['0','1','2','3','>3'], [cero, uno, dos, tres, mas_tres], color='#3498db')
                 st.pyplot(fig_bars)
+                
+            # Gráficas para WORD GENERAL
+            fig_p, ax_p = plt.subplots(figsize=(5,4)); ax_p.pie([pasan, no_pasan], labels=['Sí', 'No'], autopct='%1.1f%%', colors=['#2ecc71', '#e74c3c'], startangle=90)
+            fig_d, ax_d = plt.subplots(figsize=(5,4)); bars_d = ax_d.bar(['0', '1', '2', '>2'], [cero, uno, dos, tres+mas_tres], color='#3498db'); ax_d.bar_label(bars_d)
+            fig_m, ax_m = plt.subplots(figsize=(10,5)); d_graf = stats_mat.sort_values('Media', ascending=False); bars_m = ax_m.bar(d_graf['Materia'], d_graf['Media'], color='#9b59b6'); ax_m.bar_label(bars_m, fmt='%.2f')
+            fig_pr, ax_pr = plt.subplots(figsize=(8,3)); ax_pr.bar(['Sí', 'No'], [pasan, no_pasan], color=['green', 'red'])
+
+            plots_general = []
+            for f in [fig_p, fig_d, fig_m, fig_pr]:
+                buf = io.BytesIO(); f.savefig(buf, format='png', bbox_inches='tight'); buf.seek(0); plots_general.append(buf)
+
+            if st.button("📄 Generar Informe General Word"):
+                st.download_button("Descargar Informe", generate_global_report(res, plots_general, stats_mat, centro, grupo), f"Global_{grupo}.docx", type="primary")
 
         # 2. MATERIAS
         with tab2:
@@ -389,60 +400,52 @@ if st.session_state.data is not None:
                     st.rerun()
                 except: pass
 
-        # 4. INFORMES INDIVIDUALES Y GENERAL (CORREGIDO)
+        # 4. INFORMES INDIVIDUALES (RESTAURADO)
         with tab4:
-            st.write("Generador de informes.")
+            st.header("Informes Detallados por Alumno")
             
-            # Regenerar gráficas generales para el Word
-            # 1. Pie
-            fig_p, ax_p = plt.subplots(figsize=(5,4))
-            ax_p.pie([pasan, no_pasan], labels=['Sí', 'No'], autopct='%1.1f%%', colors=['#2ecc71', '#e74c3c'], startangle=90)
+            c_izq, c_der = st.columns(2)
             
-            # 2. Distribución suspensos
-            fig_d, ax_d = plt.subplots(figsize=(5,4))
-            bars_d = ax_d.bar(['0', '1', '2', '>2'], [cero, uno, dos, tres+mas_tres], color='#3498db')
-            ax_d.bar_label(bars_d)
-
-            # 3. Media Notas
-            fig_m, ax_m = plt.subplots(figsize=(10,5))
-            d_graf = stats_mat.sort_values('Media', ascending=False)
-            bars_m = ax_m.bar(d_graf['Materia'], d_graf['Media'], color='#9b59b6')
-            ax_m.bar_label(bars_m, fmt='%.2f')
-            plt.xticks(rotation=45)
-
-            # 4. Promocion vs No
-            fig_pr, ax_pr = plt.subplots(figsize=(8,3))
-            ax_pr.bar(['Sí', 'No'], [pasan, no_pasan], color=['green', 'red'])
-
-            plots_general = []
-            for f in [fig_p, fig_d, fig_m, fig_pr]:
-                buf = io.BytesIO()
-                f.savefig(buf, format='png', bbox_inches='tight')
-                buf.seek(0)
-                plots_general.append(buf)
-
-            if st.button("Generar Informe General Word"):
-                st.download_button("Descargar", generate_global_report(res, plots_general, stats_mat, centro, grupo), f"Global_{grupo}.docx")
+            # Columna Izquierda: Individual
+            with c_izq:
+                st.subheader("👤 Un Alumno")
+                sel = st.selectbox("Selecciona alumno:", stats_al['Alumno'].unique())
+                if sel:
+                    inf = stats_al[stats_al['Alumno']==sel].iloc[0]
+                    # Vista previa del análisis
+                    st.info(generar_comentario_individual(sel, df[df['Alumno']==sel]))
+                    # Botón descarga individual
+                    st.download_button(
+                        f"⬇️ Descargar Informe de {sel}", 
+                        crear_informe_individual(sel, df[df['Alumno']==sel], inf['Media'], inf['Suspensos'], stats_mat), 
+                        f"{sel}.docx"
+                    )
+            
+            # Columna Derecha: Todos
+            with c_der:
+                st.subheader("🏫 Toda la Clase")
+                st.write("Genera un único archivo Word con todos los informes individuales (uno por página).")
+                if st.button("🚀 Generar Informe de TODOS"):
+                    st.download_button(
+                        "⬇️ Descargar Informe Masivo (.docx)", 
+                        generar_informe_todos_alumnos(df, stats_al, stats_mat), 
+                        f"Boletines_Todos_{grupo}.docx",
+                        type="primary"
+                    )
 
         # 5. RESUMEN PADRES
         with tab5:
             st.header("Resumen para Reunión de Padres")
             
-            # Gráfica 1: Distribución suspensos
             fig_padres1, ax_p1 = plt.subplots(figsize=(6, 4))
-            labels_p = ['0', '1', '2', '3', '>3']
-            vals_p = [cero, uno, dos, tres, mas_tres]
-            bars_p = ax_p1.bar(labels_p, vals_p, color=['#2ecc71', '#f1c40f', '#e67e22', '#e74c3c', '#c0392b'])
+            bars_p = ax_p1.bar(['0', '1', '2', '3', '>3'], [cero, uno, dos, tres, mas_tres], color=['#2ecc71', '#f1c40f', '#e67e22', '#e74c3c', '#c0392b'])
             ax_p1.bar_label(bars_p)
-            ax_p1.set_title("Alumnos según nº de materias suspensas")
-            ax_p1.set_ylabel("Nº Alumnos")
+            ax_p1.set_title("Nº Materias Suspensas")
             
-            # Gráfica 2: % Suspensos por materia
             fig_padres2, ax_p2 = plt.subplots(figsize=(6, 4))
             df_p2 = stats_mat.sort_values('Pct_Suspensos', ascending=True)
             ax_p2.barh(df_p2['Materia'], df_p2['Pct_Suspensos'], color='#3498db')
-            ax_p2.set_title("% de Suspensos por Materia")
-            ax_p2.set_xlabel("% Suspensos")
+            ax_p2.set_title("% Suspensos por Materia")
             
             c1, c2 = st.columns(2)
             with c1: st.pyplot(fig_padres1)
@@ -452,13 +455,6 @@ if st.session_state.data is not None:
             buf_p2 = io.BytesIO(); fig_padres2.savefig(buf_p2, format='png', bbox_inches='tight'); buf_p2.seek(0)
             
             if st.button("📄 Generar Word Resumen Padres"):
-                doc_padres = generate_parents_report(res, stats_mat, buf_p1, buf_p2)
-                st.download_button(
-                    label="⬇️ Descargar Resumen Padres (.docx)",
-                    data=doc_padres,
-                    file_name=f"Resumen_Padres_{grupo}.docx",
-                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                    type="primary"
-                )
+                st.download_button("⬇️ Descargar Resumen Padres (.docx)", generate_parents_report(res, stats_mat, buf_p1, buf_p2), f"Resumen_Padres_{grupo}.docx", type="primary")
 else:
     st.info("👈 Sube las actas en el menú lateral.")
