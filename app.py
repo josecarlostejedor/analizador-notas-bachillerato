@@ -9,7 +9,7 @@ import openai
 import io
 import pdfplumber
 import docx
-from datetime import datetime # Nueva librería para la fecha
+from datetime import datetime
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(
@@ -74,6 +74,7 @@ def process_data_with_ai(text_data, api_key, filename):
     if not text_data: return None
     client = openai.OpenAI(api_key=api_key)
     
+    # PROMPT AJUSTADO PARA GARANTIZAR APELLIDOS Y NOMBRE
     prompt = f"""
     Analiza el siguiente texto de un acta de evaluación ('{filename}').
     
@@ -84,7 +85,9 @@ def process_data_with_ai(text_data, api_key, filename):
     
     TAREA:
     Genera un CSV con columnas: "Alumno", "Materia", "Nota".
-    REGLAS:
+    
+    REGLAS IMPORTANTES:
+    - Columna 'Alumno': DEBE incluir APELLIDOS Y NOMBRE COMPLETOS tal y como aparecen en el documento (Ej: "GARCÍA PÉREZ, JUAN"). No resumas el nombre.
     - Materia: Usa abreviaturas (EF, ING1, etc).
     - Nota: Numérico (0-10).
     - Devuelve SOLO el CSV.
@@ -108,10 +111,10 @@ def generar_comentario_individual(alumno, datos_alumno):
     num_suspensos = len(suspensos)
     lista_suspensas = suspensos['Materia'].tolist()
     
-    txt = f"El alumno tiene actualmente {num_suspensos} materias suspensas."
+    txt = f"El alumno/a {alumno} tiene actualmente {num_suspensos} materias suspensas."
     
     if num_suspensos == 0:
-        txt = "El alumno no tiene ninguna materia suspensa. ¡Excelente trabajo! Se recomienda mantener la constancia en el estudio y, si es posible, ayudar a compañeros en las materias donde destaca."
+        txt = "No tiene ninguna materia suspensa. ¡Excelente trabajo! Se recomienda mantener la constancia en el estudio y, si es posible, ayudar a compañeros en las materias donde destaca."
     elif num_suspensos == 1:
         txt += f" La materia pendiente es: {', '.join(lista_suspensas)}. Al ser solo una materia, la recuperación es muy factible. Se recomienda hablar con el profesor de la asignatura para establecer un plan de trabajo específico."
     elif num_suspensos == 2:
@@ -132,6 +135,7 @@ def generar_valoracion_detallada(res):
 
 # --- FUNCIONES DE WORD (INDIVIDUAL DETALLADO) ---
 def add_alumno_to_doc(doc, alumno, datos_alumno, media, suspensos, stats_mat):
+    # Título con Apellidos y Nombre
     doc.add_heading(f'Informe Individual: {alumno}', 0)
     doc.add_paragraph(f"Nota Media: {media:.2f} | Materias Suspensas: {suspensos}").alignment = WD_ALIGN_PARAGRAPH.CENTER
     
@@ -164,23 +168,18 @@ def add_alumno_to_doc(doc, alumno, datos_alumno, media, suspensos, stats_mat):
             run.font.color.rgb = RGBColor(255, 0, 0)
             run.bold = True
 
-    # --- NUEVO: PIE DE PÁGINA CON FIRMA ---
-    doc.add_paragraph("\n\n") # Espacio extra
-    
-    # Fecha actual en español
+    # --- PIE DE PÁGINA CON FIRMA ---
+    doc.add_paragraph("\n\n")
     now = datetime.now()
     meses = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
     fecha_str = f"En Salamanca, a {now.day} de {meses[now.month-1]} de {now.year}"
     
     p_fecha = doc.add_paragraph(fecha_str)
     p_fecha.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-    
     doc.add_paragraph("\n")
-    
     p_firma = doc.add_paragraph("El Tutor del grupo:")
     p_firma.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    p_firma.add_run("\n\n\n") # Hueco para firmar a mano si se imprime
-    
+    p_firma.add_run("\n\n\n") 
     run_nombre = p_firma.add_run("D. José Carlos Tejedor Lorenzo")
     run_nombre.bold = True
 
@@ -226,7 +225,6 @@ def generate_global_report(datos_resumen, plots, ranking_materias, centro, grupo
 
 def generate_parents_report(res, stats_mat, plot_suspensos, plot_pct_materias):
     doc = Document()
-    # Configurar Apaisado
     section = doc.sections[0]
     section.orientation = WD_ORIENT.LANDSCAPE
     new_width, new_height = section.page_height, section.page_width
@@ -419,28 +417,23 @@ if st.session_state.data is not None:
                     st.rerun()
                 except: pass
 
-        # 4. INFORMES INDIVIDUALES (RESTAURADO)
+        # 4. INFORMES INDIVIDUALES
         with tab4:
             st.header("Informes Detallados por Alumno")
-            
             c_izq, c_der = st.columns(2)
             
-            # Columna Izquierda: Individual
             with c_izq:
                 st.subheader("👤 Un Alumno")
                 sel = st.selectbox("Selecciona alumno:", stats_al['Alumno'].unique())
                 if sel:
                     inf = stats_al[stats_al['Alumno']==sel].iloc[0]
-                    # Vista previa del análisis
                     st.info(generar_comentario_individual(sel, df[df['Alumno']==sel]))
-                    # Botón descarga individual
                     st.download_button(
                         f"⬇️ Descargar Informe de {sel}", 
                         crear_informe_individual(sel, df[df['Alumno']==sel], inf['Media'], inf['Suspensos'], stats_mat), 
                         f"{sel}.docx"
                     )
             
-            # Columna Derecha: Todos
             with c_der:
                 st.subheader("🏫 Toda la Clase")
                 st.write("Genera un único archivo Word con todos los informes individuales (uno por página) con firma y fecha.")
