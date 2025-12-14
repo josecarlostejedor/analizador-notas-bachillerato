@@ -9,6 +9,7 @@ import openai
 import io
 import pdfplumber
 import docx
+from datetime import datetime # Nueva librería para la fecha
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(
@@ -103,7 +104,6 @@ def process_data_with_ai(text_data, api_key, filename):
 
 # --- GENERACIÓN DE TEXTOS AUTOMÁTICOS ---
 def generar_comentario_individual(alumno, datos_alumno):
-    """Genera el texto de consejo para el alumno"""
     suspensos = datos_alumno[datos_alumno['Nota'] < 5]
     num_suspensos = len(suspensos)
     lista_suspensas = suspensos['Materia'].tolist()
@@ -160,10 +160,29 @@ def add_alumno_to_doc(doc, alumno, datos_alumno, media, suspensos, stats_mat):
         
         # Poner en ROJO si suspende
         if row['Nota'] < 5:
-            # Color rojo al texto de la nota
             run = c[1].paragraphs[0].runs[0]
             run.font.color.rgb = RGBColor(255, 0, 0)
             run.bold = True
+
+    # --- NUEVO: PIE DE PÁGINA CON FIRMA ---
+    doc.add_paragraph("\n\n") # Espacio extra
+    
+    # Fecha actual en español
+    now = datetime.now()
+    meses = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
+    fecha_str = f"En Salamanca, a {now.day} de {meses[now.month-1]} de {now.year}"
+    
+    p_fecha = doc.add_paragraph(fecha_str)
+    p_fecha.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    
+    doc.add_paragraph("\n")
+    
+    p_firma = doc.add_paragraph("El Tutor del grupo:")
+    p_firma.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    p_firma.add_run("\n\n\n") # Hueco para firmar a mano si se imprime
+    
+    run_nombre = p_firma.add_run("D. José Carlos Tejedor Lorenzo")
+    run_nombre.bold = True
 
 def crear_informe_individual(alumno, datos_alumno, media, suspensos, stats_mat):
     doc = Document()
@@ -424,7 +443,7 @@ if st.session_state.data is not None:
             # Columna Derecha: Todos
             with c_der:
                 st.subheader("🏫 Toda la Clase")
-                st.write("Genera un único archivo Word con todos los informes individuales (uno por página).")
+                st.write("Genera un único archivo Word con todos los informes individuales (uno por página) con firma y fecha.")
                 if st.button("🚀 Generar Informe de TODOS"):
                     st.download_button(
                         "⬇️ Descargar Informe Masivo (.docx)", 
