@@ -75,7 +75,7 @@ def extract_text_from_docx(file):
 def limpiar_nombre_alumno(texto):
     if not isinstance(texto, str): return str(texto)
     texto = texto.strip()
-    texto = re.sub(r'^\d+[\.\-\s]+', '', texto) # Quitar índice inicial
+    texto = re.sub(r'^\d+[\.\-\s]+', '', texto) # Quitar índice
     if ',' in texto:
         partes = texto.split(',')
         if len(partes) >= 2:
@@ -190,7 +190,7 @@ def generar_informe_todos_alumnos(df, stats_al, stats_mat, orden_alumnos):
     bio = io.BytesIO(); doc.save(bio); bio.seek(0)
     return bio
 
-# --- WORD GLOBAL (MODIFICADO CON NUEVOS REQUISITOS) ---
+# --- WORD GLOBAL COMPLETO ---
 def generate_global_report(datos_resumen, plots, ranking_materias, centro, grupo, stats_al):
     doc = Document()
     s = doc.sections[0]; s.orientation = WD_ORIENT.LANDSCAPE; s.page_width, s.page_height = s.page_height, s.page_width
@@ -198,53 +198,40 @@ def generate_global_report(datos_resumen, plots, ranking_materias, centro, grupo
     doc.add_heading(f'Informe de Evaluación - {centro}', 0)
     doc.add_heading('1. Datos Generales y Promoción', 1)
     
-    # Datos básicos
     doc.add_paragraph(f"a) Grupo evaluado: {grupo}")
     doc.add_paragraph(f"b) Número de alumnos: {datos_resumen['total_alumnos']}")
     doc.add_paragraph(f"c) Media del grupo: {datos_resumen['media_grupo']:.2f}")
     
-    # Promoción detallada
     doc.add_heading('Nivel de Promoción:', 2)
-    p_prom = doc.add_paragraph()
-    p_prom.add_run(f"- Alumnos con 0 suspensos: {datos_resumen['cero']} ({datos_resumen['pct_cero']:.1f}%)\n")
-    p_prom.add_run(f"- Alumnos con 1 suspenso: {datos_resumen['uno']} ({datos_resumen['pct_uno']:.1f}%)\n")
-    p_prom.add_run(f"- Alumnos con 2 suspensos: {datos_resumen['dos']} ({datos_resumen['pct_dos']:.1f}%)\n")
-    p_prom.add_run(f"- Alumnos con 3 suspensos: {datos_resumen['tres']} ({datos_resumen['pct_tres']:.1f}%)\n")
-    p_prom.add_run(f"- Alumnos con >3 suspensos: {datos_resumen['mas_tres']} ({datos_resumen['pct_mas_tres']:.1f}%)\n")
+    p = doc.add_paragraph()
+    p.add_run(f"- 0 suspensos: {datos_resumen['cero']} ({datos_resumen['pct_cero']:.1f}%)\n")
+    p.add_run(f"- 1 suspenso: {datos_resumen['uno']} ({datos_resumen['pct_uno']:.1f}%)\n")
+    p.add_run(f"- 2 suspensos: {datos_resumen['dos']} ({datos_resumen['pct_dos']:.1f}%)\n")
+    p.add_run(f"- 3 suspensos: {datos_resumen['tres']} ({datos_resumen['pct_tres']:.1f}%)\n")
+    p.add_run(f"- >3 suspensos: {datos_resumen['mas_tres']} ({datos_resumen['pct_mas_tres']:.1f}%)")
     
-    doc.add_paragraph(f"TOTAL PROMOCIONAN (0-2 suspensas): {datos_resumen['pasan']} ({datos_resumen['pct_pasan']:.1f}%)").bold = True
-    doc.add_paragraph(f"TOTAL NO PROMOCIONAN (>2 suspensas): {datos_resumen['no_pasan']} ({datos_resumen['pct_no_pasan']:.1f}%)").bold = True
+    doc.add_paragraph(f"PROMOCIONAN (0-2 susp): {datos_resumen['pasan']} ({datos_resumen['pct_pasan']:.1f}%)").bold = True
+    doc.add_paragraph(f"NO PROMOCIONAN (>2 susp): {datos_resumen['no_pasan']} ({datos_resumen['pct_no_pasan']:.1f}%)").bold = True
     
-    # Análisis detallado Materias/Alumnos
     doc.add_heading('2. Análisis de Resultados', 1)
     
-    # a) Mejores Asignaturas (Top 4)
-    doc.add_paragraph("a) Las asignaturas con mejores resultados han sido:").bold = True
-    top_mat = ranking_materias.sort_values(by=['Pct_Aprobados', 'Media'], ascending=[False, False]).head(4)
-    for _, row in top_mat.iterrows():
-        doc.add_paragraph(f"   - {row['Materia']} con un {row['Pct_Aprobados']:.1f}% de aprobados y nota media de {row['Media']:.2f}")
+    doc.add_paragraph("a) Asignaturas con mejores resultados (Top 4):").bold = True
+    top_m = ranking_materias.sort_values(by=['Pct_Aprobados', 'Media'], ascending=[False, False]).head(4)
+    for _, r in top_m.iterrows(): doc.add_paragraph(f"   - {r['Materia']}: {r['Pct_Aprobados']:.1f}% aprobados, media {r['Media']:.2f}")
 
-    # b) Peores Asignaturas (Bottom 4)
-    doc.add_paragraph("\nb) Las asignaturas con peores resultados han sido:").bold = True
-    bot_mat = ranking_materias.sort_values(by=['Pct_Aprobados', 'Media'], ascending=[True, True]).head(4)
-    for _, row in bot_mat.iterrows():
-        doc.add_paragraph(f"   - {row['Materia']} con un {row['Pct_Aprobados']:.1f}% de aprobados y nota media de {row['Media']:.2f}")
+    doc.add_paragraph("\nb) Asignaturas con peores resultados (Bottom 4):").bold = True
+    bot_m = ranking_materias.sort_values(by=['Pct_Aprobados', 'Media'], ascending=[True, True]).head(4)
+    for _, r in bot_m.iterrows(): doc.add_paragraph(f"   - {r['Materia']}: {r['Pct_Aprobados']:.1f}% aprobados, media {r['Media']:.2f}")
 
-    # c) Mejores Alumnos (Top 3)
-    doc.add_paragraph("\nc) Los tres alumnos con mejores resultados han sido:").bold = True
+    doc.add_paragraph("\nc) Alumnos con mejores resultados (Top 3):").bold = True
     top_al = stats_al.sort_values(by='Media', ascending=False).head(3)
-    i = 1
-    for _, row in top_al.iterrows():
-        doc.add_paragraph(f"   {i}- {row['Alumno']} y la media es de {row['Media']:.2f} puntos.")
-        i += 1
+    i=1
+    for _, r in top_al.iterrows(): doc.add_paragraph(f"   {i}- {r['Alumno']} (Media: {r['Media']:.2f})"); i+=1
 
-    # d) Peores Alumnos (Bottom 3)
-    doc.add_paragraph("\nd) Los tres alumnos con peores resultados han sido:").bold = True
+    doc.add_paragraph("\nd) Alumnos con peores resultados (Bottom 3):").bold = True
     bot_al = stats_al.sort_values(by='Media', ascending=True).head(3)
-    i = 1
-    for _, row in bot_al.iterrows():
-        doc.add_paragraph(f"   {i}- {row['Alumno']} y la media es de {row['Media']:.2f} puntos.")
-        i += 1
+    i=1
+    for _, r in bot_al.iterrows(): doc.add_paragraph(f"   {i}- {r['Alumno']} (Media: {r['Media']:.2f})"); i+=1
 
     doc.add_heading('3. Valoración', 1)
     doc.add_paragraph(datos_resumen['valoracion']).italic = True
@@ -334,9 +321,17 @@ if st.session_state.data is not None:
     if len(df.columns) >= 3: df.columns = ['Alumno', 'Materia', 'Nota']
     df = df[['Alumno', 'Materia', 'Nota']]
     
+    # --- FILTRO CORRECTOR 33 vs 31 ALUMNOS ---
+    # Limpieza nombres
     df['Alumno'] = df['Alumno'].apply(limpiar_nombre_alumno)
-    df = df.drop_duplicates(subset=['Alumno', 'Materia'], keep='last')
+    # Convertir nota a numérico
     df['Nota'] = pd.to_numeric(df['Nota'], errors='coerce')
+    # ELIMINAR FILAS VACÍAS O ENCABEZADOS QUE LA IA HAYA COGIDO POR ERROR
+    df = df.dropna(subset=['Nota']) 
+    df = df[~df['Alumno'].str.contains('Alumno|Nombre|Apellidos', case=False, na=False)] # Filtra cabeceras
+    
+    # Resto limpieza
+    df = df.drop_duplicates(subset=['Alumno', 'Materia'], keep='last')
     df['Aprobado'] = df['Nota'] >= 5
     
     # ORDEN ORIGINAL
@@ -347,42 +342,26 @@ if st.session_state.data is not None:
     stats_mat['Pct_Aprobados'] = (stats_mat['Aprobados']/stats_mat['Total'])*100
     stats_mat['Pct_Suspensos'] = (stats_mat['Suspensos']/stats_mat['Total'])*100
     
-    # --- CÁLCULO ESTADÍSTICO BLINDADO (SUMA EXACTA ALUMNOS) ---
-    total = len(stats_al)
+    total = len(stats_al); media_gr = df['Nota'].mean()
     cero = stats_al[stats_al['Suspensos']==0].shape[0]
     uno = stats_al[stats_al['Suspensos']==1].shape[0]
     dos = stats_al[stats_al['Suspensos']==2].shape[0]
     tres = stats_al[stats_al['Suspensos']==3].shape[0]
     mas_tres = stats_al[stats_al['Suspensos']>3].shape[0]
+    pasan = cero+uno+dos; no_pasan = tres+mas_tres
+    base = total if total>0 else 1
     
-    # Verificación de integridad
-    suma_parcial = cero + uno + dos + tres + mas_tres
-    if suma_parcial != total:
-        st.warning(f"Nota: Se han detectado discrepancias menores en el conteo ({suma_parcial} vs {total}). Se han ajustado los porcentajes.")
-    
-    base = total if total > 0 else 1
-    pasan = cero + uno + dos
-    no_pasan = tres + mas_tres
-    
-    res = {
-        'total_alumnos': total, 
-        'media_grupo': df['Nota'].mean(), 
-        'media_suspensos_grupo': stats_al['Suspensos'].mean(),
-        'cero': cero, 'pct_cero': (cero/base)*100,
-        'uno': uno, 'pct_uno': (uno/base)*100,
-        'dos': dos, 'pct_dos': (dos/base)*100,
-        'tres': tres, 'pct_tres': (tres/base)*100,
-        'mas_tres': mas_tres, 'pct_mas_tres': (mas_tres/base)*100,
-        'pasan': pasan, 'pct_pasan': (pasan/base)*100, 
-        'no_pasan': no_pasan, 'pct_no_pasan': (no_pasan/base)*100, 
-        'pct_mas_dos': ((tres+mas_tres)/base)*100
-    }
+    res = {'total_alumnos': total, 'media_grupo': media_gr, 'media_suspensos_grupo': stats_al['Suspensos'].mean(),
+           'cero':cero, 'pct_cero':(cero/base)*100, 'uno':uno, 'pct_uno':(uno/base)*100,
+           'dos':dos, 'pct_dos':(dos/base)*100, 'tres':tres, 'pct_tres':(tres/base)*100,
+           'mas_tres':mas_tres, 'pct_mas_tres':(mas_tres/base)*100,
+           'pasan': pasan, 'pct_pasan': (pasan/base)*100, 'no_pasan': no_pasan, 'pct_no_pasan': (no_pasan/base)*100}
     res['valoracion'] = generar_valoracion_detallada(res)
 
     tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 General", "📚 Materias", "🎓 Editor", "📄 Informes", "👨‍👩‍👧 Padres"])
     
     with tab1:
-        st.metric("Media Grupo", f"{res['media_grupo']:.2f}")
+        st.metric("Media Grupo", f"{media_gr:.2f}")
         c1,c2 = st.columns(2)
         with c1: 
             fig_p, ax_p = plt.subplots(figsize=(4,3)); ax_p.pie([pasan, no_pasan], labels=['Sí', 'No'], autopct='%1.f%%', colors=['#2ecc71','#e74c3c']); st.pyplot(fig_p)
@@ -398,7 +377,6 @@ if st.session_state.data is not None:
             buf = io.BytesIO(); f.savefig(buf, format='png', bbox_inches='tight'); buf.seek(0); plots.append(buf)
         
         if st.button("📄 Informe General Word"):
-            # Pasamos stats_al para el ranking de alumnos
             st.download_button("Descargar", generate_global_report(res, plots, stats_mat, centro, grupo, stats_al), f"Global_{grupo}.docx", type="primary")
 
     with tab2: st.dataframe(stats_mat.style.format({'Pct_Aprobados':'{:.1f}%'}), use_container_width=True)
