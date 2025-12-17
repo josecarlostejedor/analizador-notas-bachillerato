@@ -396,4 +396,7 @@ if st.session_state.data is not None:
         
         c1,c2 = st.columns(2); c1.pyplot(fig_p1); c2.pyplot(fig_p2)
         b1 = io.BytesIO(); fig_p1.savefig(b1, format='png', bbox_inches='tight'); b1.seek(0)
-        b2 = io.BytesIO(); fig_p2.sa
+        b2 = io.BytesIO(); fig_p2.savefig(b2, format='png', bbox_inches='tight'); b2.seek(0)
+        if st.button("📄 Word Padres"):
+            st.download_button("Descargar", generate_parents_report(res, stats_mat, b1, b2), f"Padres_{grupo}.docx", type="primary")
+else: st.info("Sube archivo")
