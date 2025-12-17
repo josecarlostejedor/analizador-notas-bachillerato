@@ -190,7 +190,7 @@ def generar_informe_todos_alumnos(df, stats_al, stats_mat, orden_alumnos):
     bio = io.BytesIO(); doc.save(bio); bio.seek(0)
     return bio
 
-# --- WORD GLOBAL COMPLETO ---
+# --- WORD GLOBAL ---
 def generate_global_report(datos_resumen, plots, ranking_materias, centro, grupo, stats_al):
     doc = Document()
     s = doc.sections[0]; s.orientation = WD_ORIENT.LANDSCAPE; s.page_width, s.page_height = s.page_height, s.page_width
@@ -321,26 +321,25 @@ if st.session_state.data is not None:
     if len(df.columns) >= 3: df.columns = ['Alumno', 'Materia', 'Nota']
     df = df[['Alumno', 'Materia', 'Nota']]
     
-    # --- FILTRO CORRECTOR 33 vs 31 ALUMNOS ---
-    # Limpieza nombres
+    # LIMPIEZA Y FILTROS ESTADÍSTICOS EXACTOS
     df['Alumno'] = df['Alumno'].apply(limpiar_nombre_alumno)
-    # Convertir nota a numérico
     df['Nota'] = pd.to_numeric(df['Nota'], errors='coerce')
-    # ELIMINAR FILAS VACÍAS O ENCABEZADOS QUE LA IA HAYA COGIDO POR ERROR
-    df = df.dropna(subset=['Nota']) 
-    df = df[~df['Alumno'].str.contains('Alumno|Nombre|Apellidos', case=False, na=False)] # Filtra cabeceras
-    
-    # Resto limpieza
+    df = df.dropna(subset=['Nota'])
+    df = df[~df['Alumno'].str.contains('Alumno|Nombre|Apellidos', case=False, na=False)]
     df = df.drop_duplicates(subset=['Alumno', 'Materia'], keep='last')
     df['Aprobado'] = df['Nota'] >= 5
     
     # ORDEN ORIGINAL
     orden_alumnos = df['Alumno'].unique()
     
+    # CÁLCULOS
     stats_al = df.groupby('Alumno').agg(Suspensos=('Nota', lambda x: (x<5).sum()), Media=('Nota', 'mean')).reset_index()
     stats_mat = df.groupby('Materia').agg(Total=('Nota', 'count'), Aprobados=('Aprobado', 'sum'), Suspensos=('Nota', lambda x: (x<5).sum()), Media=('Nota', 'mean')).reset_index()
     stats_mat['Pct_Aprobados'] = (stats_mat['Aprobados']/stats_mat['Total'])*100
     stats_mat['Pct_Suspensos'] = (stats_mat['Suspensos']/stats_mat['Total'])*100
+    
+    # --- ORDENACIÓN DE MATERIAS MEJORADA (100% ARRIBA) ---
+    stats_mat = stats_mat.sort_values(by=['Pct_Aprobados', 'Materia'], ascending=[False, True])
     
     total = len(stats_al); media_gr = df['Nota'].mean()
     cero = stats_al[stats_al['Suspensos']==0].shape[0]
