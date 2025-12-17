@@ -14,7 +14,7 @@ import re
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(
-    page_title="Acta de Evaluación Pro", 
+    page_title="Acta de Evaluación", 
     page_icon="🎓", 
     layout="wide",
     initial_sidebar_state="expanded"
@@ -54,35 +54,17 @@ def reiniciar_app():
     st.session_state.uploader_key += 1
     st.rerun()
 
-# --- FUNCIONES DE EXTRACCIÓN (NUEVO MOTOR DE TABLAS) ---
-def get_pdf_content(file):
-    """
-    Extrae el contenido del PDF intentando preservar la estructura de TABLA.
-    Esto es crucial para no confundir notas con índices.
-    """
+# --- FUNCIONES DE EXTRACCIÓN ---
+def get_pdf_text_content(file):
+    """Extrae el texto crudo manteniendo la disposición visual."""
     text_content = ""
-    tables_found = False
-    
     try:
         with pdfplumber.open(file) as pdf:
             for page in pdf.pages:
-                # Intentamos extraer tablas primero (Más preciso)
-                tables = page.extract_tables()
-                if tables:
-                    tables_found = True
-                    for table in tables:
-                        for row in table:
-                            # Limpiamos None y saltos de línea dentro de celdas
-                            clean_row = [str(cell).replace('\n', ' ').strip() if cell else "" for cell in row]
-                            # Unimos con un separador único que la IA pueda entender
-                            text_content += " | ".join(clean_row) + "\n"
-                else:
-                    # Si no hay tablas, extraemos texto manteniendo la posición física
-                    text_content += page.extract_text(x_tolerance=2, y_tolerance=2) + "\n"
-        
+                # x_tolerance ayuda a mantener columnas separadas visualmente
+                text_content += page.extract_text(x_tolerance=2, y_tolerance=2) + "\n"
         return text_content
     except Exception as e:
-        st.error(f"Error leyendo el PDF: {e}")
         return ""
 
 def extract_text_from_docx(file):
@@ -92,17 +74,21 @@ def extract_text_from_docx(file):
     except: return ""
 
 # --- LIMPIEZA DE NOMBRES ---
-def limpiar_nombre_completo(texto):
+def limpiar_nombre_alumno(texto):
     """
-    Transforma: "1. PEREZ GOMEZ, JUAN" -> "JUAN PEREZ GOMEZ"
+    1. Quita números de lista al principio (1, 2...).
+    2. Gira "APELLIDOS, NOMBRE" a "NOMBRE APELLIDOS".
     """
     if not isinstance(texto, str): return str(texto)
     
-    # 1. Eliminar números de lista al principio (1, 1., 01)
-    # Busca digitos al inicio seguidos de punto o espacio
-    texto = re.sub(r'^\d+[\.\-\s]+', '', texto.strip())
+    # Limpiar espacios extra
+    texto = texto.strip()
     
-    # 2. Girar si tiene coma (Apellidos, Nombre -> Nombre Apellidos)
+    # 1. Quitar número inicial (ej: "1 ANTHONY" -> "ANTHONY")
+    # Busca dígitos al inicio seguidos de espacio, punto o guion
+    texto = re.sub(r'^\d+[\.\-\s]+', '', texto)
+    
+    # 2. Reordenar nombre si hay coma
     if ',' in texto:
         partes = texto.split(',')
         if len(partes) >= 2:
@@ -118,54 +104,51 @@ def process_data_with_ai(text_data, api_key, filename):
         
     client = openai.OpenAI(api_key=api_key)
     
-    # PROMPT DISEÑADO PARA LEER ESTRUCTURA DE TABLA (|)
+    # PROMPT DISEÑADO PARA EVITAR EL ERROR DE COLUMNAS
     prompt = f"""
-    Analiza los datos de este acta de evaluación ('{filename}').
-    El texto representa una TABLA donde las columnas están separadas por '|'.
+    Analiza el texto de este acta de evaluación ('{filename}').
     
-    OBJETIVO: Extraer calificaciones exactas.
+    ESTRUCTURA DEL PDF:
+    1. Lista de alumnos (ej: "1. APELLIDO, NOMBRE"). 
+       IMPORTANTE: El número "1" es un índice, NO ES LA NOTA.
+    2. Las notas (0-10) suelen estar en un bloque separado o al final de la línea.
+    3. Asocia la fila de notas correcta a cada alumno.
     
-    INSTRUCCIONES CLAVE:
-    1. La primera columna suele ser el ALUMNO. Puede tener un número delante (ej: "1 | PEREZ, JUAN"). IGNORA ESE 1.
-    2. Extrae el NOMBRE COMPLETO (Apellidos y Nombre).
-    3. Las siguientes columnas son ASIGNATURAS (códigos tipo ING1, EF, MAT...).
-    4. Las celdas con números (0-10) son las NOTAS.
+    TAREA OBLIGATORIA:
+    Genera datos separados por la barra vertical '|'. NO USES COMAS para separar columnas.
+    Formato: Alumno|Materia|Nota
     
-    SALIDA CSV OBLIGATORIA (3 columnas):
-    Alumno, Materia, Nota
+    REGLAS:
+    - Alumno: Nombre COMPLETO tal cual aparece (ej: "PEREZ, JUAN"). NO resumas.
+    - Materia: Abreviatura (ING1, EF, etc).
+    - Nota: Número decimal.
+    - Usa '|' como separador.
     
-    Ejemplo de lógica:
-    Si la fila es: "PEREZ, JUAN | ING1 | 8 | MAT | 5"
-    Genera:
-    PEREZ, JUAN, ING1, 8
-    PEREZ, JUAN, MAT, 5
-    
-    DATOS A PROCESAR:
+    Texto:
     {text_data[:20000]}
     """
+    
     try:
         response = client.chat.completions.create(
             model="gpt-4o",
-            messages=[{"role": "user", "content": prompt}], temperature=0
+            messages=[{"role": "user", "content": prompt}], 
+            temperature=0
         )
-        csv_str = response.choices[0].message.content.replace("```csv", "").replace("```", "").strip()
+        # Limpiar respuesta
+        raw_content = response.choices[0].message.content
+        csv_str = raw_content.replace("```csv", "").replace("```", "").strip()
         
-        # Validar que es CSV
-        if "," not in csv_str: return None
+        # Leemos usando el separador '|' para evitar errores con las comas del nombre
+        df = pd.read_csv(io.StringIO(csv_str), sep='|', names=['Alumno', 'Materia', 'Nota'], engine='python')
         
-        df = pd.read_csv(io.StringIO(csv_str))
-        
-        # Normalizar columnas a fuerza bruta si vienen 3
-        if len(df.columns) == 3:
-            df.columns = ['Alumno', 'Materia', 'Nota']
-        
-        # Aplicar limpieza de nombres
+        # Limpieza de nombres
         if 'Alumno' in df.columns:
-            df['Alumno'] = df['Alumno'].apply(limpiar_nombre_completo)
+            df['Alumno'] = df['Alumno'].apply(limpiar_nombre_alumno)
             
         return df
+        
     except Exception as e:
-        st.error(f"Error procesando con IA: {e}")
+        st.error(f"Error técnico procesando datos: {e}")
         return None
 
 # --- GENERACIÓN DE TEXTOS AUTOMÁTICOS ---
@@ -288,14 +271,14 @@ with st.sidebar:
     api_key = st.text_input("🔑 API Key OpenAI", type="password")
     st.markdown("---")
     centro = st.text_input("Centro", "IES Lucía de Medrano")
-    grupo = st.text_input("Grupo", "1º BACH 4")
+    grupo = st.text_input("Grupo", "1º BACH 7")
     curso = st.text_input("Curso", "2024-2025")
     st.markdown("---")
     uploaded_files = st.file_uploader("📂 Subir Actas", type=['xlsx', 'pdf', 'docx', 'doc'], accept_multiple_files=True, key=f"up_{st.session_state.uploader_key}")
     
     if uploaded_files and st.session_state.data is None:
         if st.button("Analizar Datos", type="primary"):
-            if not api_key: st.error("Falta la API Key")
+            if not api_key: st.error("Falta API Key")
             else:
                 dfs = []
                 bar = st.progress(0)
@@ -305,8 +288,8 @@ with st.sidebar:
                         try: df_t = pd.read_excel(f)
                         except: pass
                     elif f.name.endswith('.pdf'):
-                        # Usar el nuevo extractor de TABLAS
-                        txt = get_pdf_content(f)
+                        # Extracción robusta de texto
+                        txt = get_pdf_text_content(f)
                         if txt: df_t = process_data_with_ai(txt, api_key, f.name)
                     elif 'doc' in f.name:
                         txt = extract_text_from_docx(f)
@@ -318,10 +301,10 @@ with st.sidebar:
                 if dfs:
                     st.session_state.data = pd.concat(dfs, ignore_index=True)
                     st.rerun()
-                else: st.error("No se extrajeron datos. El PDF puede ser imagen o estar vacío.")
+                else: st.error("No se extrajeron datos. Revisa el archivo.")
 
     if st.session_state.data is not None:
-        if st.button("🔄 Subir nuevo archivo"): reiniciar_app()
+        if st.button("🔄 Subir nuevo"): reiniciar_app()
 
 st.title("Acta de Evaluación")
 col_b1, col_b2, col_b3 = st.columns([1,1,1])
@@ -331,16 +314,11 @@ col_b3.info(f"📅 **Curso:** {curso}")
 
 if st.session_state.data is not None:
     df = st.session_state.data
-    # Normalización
+    # Normalización de columnas automática (si ya vienen bien del CSV)
     if len(df.columns) >= 3:
-        cols = list(df.columns); cols[0]='Alumno'; cols[1]='Materia'; cols[2]='Nota'
-        df.columns = cols
-    df = df[['Alumno', 'Materia', 'Nota']]
+        df.columns = ['Alumno', 'Materia', 'Nota']
     
-    # Limpieza nombres
-    df['Alumno'] = df['Alumno'].apply(limpiar_nombre_completo)
-    
-    # Limpieza datos
+    # Limpieza y cálculos
     df = df.drop_duplicates(subset=['Alumno', 'Materia'], keep='last')
     df['Nota'] = pd.to_numeric(df['Nota'], errors='coerce')
     df['Aprobado'] = df['Nota'] >= 5
@@ -373,7 +351,6 @@ if st.session_state.data is not None:
         with c2:
             fig_b, ax_b = plt.subplots(figsize=(4,3)); ax_b.bar(['0','1','2','3','>3'], [cero,uno,dos,tres,mas_tres], color='#3498db'); st.pyplot(fig_b)
             
-        # Graficas para word
         fig_d, ax_d = plt.subplots(figsize=(5,4)); bars_d = ax_d.bar(['0', '1', '2', '>2'], [cero, uno, dos, tres+mas_tres], color='#3498db'); ax_d.bar_label(bars_d)
         fig_m, ax_m = plt.subplots(figsize=(10,5)); d_gf = stats_mat.sort_values('Media', ascending=False); bars_m = ax_m.bar(d_gf['Materia'], d_gf['Media'], color='#9b59b6'); ax_m.bar_label(bars_m, fmt='%.2f')
         fig_pr, ax_pr = plt.subplots(figsize=(8,3)); ax_pr.bar(['Sí', 'No'], [pasan, no_pasan], color=['green', 'red'])
@@ -419,7 +396,4 @@ if st.session_state.data is not None:
         
         c1,c2 = st.columns(2); c1.pyplot(fig_p1); c2.pyplot(fig_p2)
         b1 = io.BytesIO(); fig_p1.savefig(b1, format='png', bbox_inches='tight'); b1.seek(0)
-        b2 = io.BytesIO(); fig_p2.savefig(b2, format='png', bbox_inches='tight'); b2.seek(0)
-        if st.button("📄 Word Padres"):
-            st.download_button("Descargar", generate_parents_report(res, stats_mat, b1, b2), f"Padres_{grupo}.docx", type="primary")
-else: st.info("Sube archivo")
+        b2 = io.BytesIO(); fig_p2.sa
