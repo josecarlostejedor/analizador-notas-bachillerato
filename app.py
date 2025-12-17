@@ -8,14 +8,13 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 import openai
 import io
 import pdfplumber
-import PyPDF2
 import docx
 from datetime import datetime
 import re
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(
-    page_title="Acta de Evaluación", 
+    page_title="Acta de Evaluación Pro", 
     page_icon="🎓", 
     layout="wide",
     initial_sidebar_state="expanded"
@@ -55,28 +54,36 @@ def reiniciar_app():
     st.session_state.uploader_key += 1
     st.rerun()
 
-# --- FUNCIONES DE EXTRACCIÓN ROBUSTA ---
-def get_pdf_text(file):
-    """Intenta extraer texto con múltiples métodos"""
-    text = ""
-    # Método 1: PDFPlumber
+# --- FUNCIONES DE EXTRACCIÓN (NUEVO MOTOR DE TABLAS) ---
+def get_pdf_content(file):
+    """
+    Extrae el contenido del PDF intentando preservar la estructura de TABLA.
+    Esto es crucial para no confundir notas con índices.
+    """
+    text_content = ""
+    tables_found = False
+    
     try:
         with pdfplumber.open(file) as pdf:
             for page in pdf.pages:
-                extracted = page.extract_text(x_tolerance=2, y_tolerance=2)
-                if extracted: text += extracted + "\n"
-    except: pass
-    
-    # Método 2: PyPDF2 (Respaldo)
-    if len(text) < 50: 
-        try:
-            file.seek(0)
-            pdf_reader = PyPDF2.PdfReader(file)
-            text = ""
-            for page in pdf_reader.pages:
-                text += page.extract_text() or ""
-        except: pass
-    return text
+                # Intentamos extraer tablas primero (Más preciso)
+                tables = page.extract_tables()
+                if tables:
+                    tables_found = True
+                    for table in tables:
+                        for row in table:
+                            # Limpiamos None y saltos de línea dentro de celdas
+                            clean_row = [str(cell).replace('\n', ' ').strip() if cell else "" for cell in row]
+                            # Unimos con un separador único que la IA pueda entender
+                            text_content += " | ".join(clean_row) + "\n"
+                else:
+                    # Si no hay tablas, extraemos texto manteniendo la posición física
+                    text_content += page.extract_text(x_tolerance=2, y_tolerance=2) + "\n"
+        
+        return text_content
+    except Exception as e:
+        st.error(f"Error leyendo el PDF: {e}")
+        return ""
 
 def extract_text_from_docx(file):
     try:
@@ -84,50 +91,57 @@ def extract_text_from_docx(file):
         return "\n".join([para.text for para in doc.paragraphs])
     except: return ""
 
-# --- LIMPIEZA DE DATOS (APELLIDOS Y NOMBRE) ---
-def limpiar_nombre_alumno(texto):
+# --- LIMPIEZA DE NOMBRES ---
+def limpiar_nombre_completo(texto):
     """
-    1. Quita números iniciales (ej: "1 ANTHONY" -> "ANTHONY")
-    2. Convierte "APELLIDOS, NOMBRE" -> "NOMBRE APELLIDOS"
+    Transforma: "1. PEREZ GOMEZ, JUAN" -> "JUAN PEREZ GOMEZ"
     """
     if not isinstance(texto, str): return str(texto)
     
-    # 1. Quitar índices numéricos al inicio
-    texto_limpio = re.sub(r'^\d+[\.\-\s]+', '', texto.strip())
+    # 1. Eliminar números de lista al principio (1, 1., 01)
+    # Busca digitos al inicio seguidos de punto o espacio
+    texto = re.sub(r'^\d+[\.\-\s]+', '', texto.strip())
     
-    # 2. Reordenar si hay coma
-    if ',' in texto_limpio:
-        partes = texto_limpio.split(',')
+    # 2. Girar si tiene coma (Apellidos, Nombre -> Nombre Apellidos)
+    if ',' in texto:
+        partes = texto.split(',')
         if len(partes) >= 2:
             apellidos = partes[0].strip()
             nombre = partes[1].strip()
             return f"{nombre} {apellidos}"
             
-    return texto_limpio
+    return texto
 
 def process_data_with_ai(text_data, api_key, filename):
-    if not text_data or len(text_data) < 10: return None
+    if not text_data or len(text_data) < 10: 
+        return None
+        
     client = openai.OpenAI(api_key=api_key)
     
+    # PROMPT DISEÑADO PARA LEER ESTRUCTURA DE TABLA (|)
     prompt = f"""
-    Analiza el texto de este acta ('{filename}').
+    Analiza los datos de este acta de evaluación ('{filename}').
+    El texto representa una TABLA donde las columnas están separadas por '|'.
     
-    PROBLEMA DE LECTURA (CRÍTICO):
-    1. Delante de cada nombre hay un número de lista (1, 2, 3...). ¡NO ES UNA NOTA!
-       Ejemplo: "1 ANTHONY..." -> El '1' es índice. Si luego ves un 8, la nota es 8.
-    2. Las notas están separadas del nombre, al final del bloque.
+    OBJETIVO: Extraer calificaciones exactas.
     
-    INSTRUCCIONES:
-    1. Extrae el NOMBRE COMPLETO (incluyendo Apellidos y coma si la hay).
-    2. Extrae la NOTA REAL (0-10). Ignora el número de índice inicial.
+    INSTRUCCIONES CLAVE:
+    1. La primera columna suele ser el ALUMNO. Puede tener un número delante (ej: "1 | PEREZ, JUAN"). IGNORA ESE 1.
+    2. Extrae el NOMBRE COMPLETO (Apellidos y Nombre).
+    3. Las siguientes columnas son ASIGNATURAS (códigos tipo ING1, EF, MAT...).
+    4. Las celdas con números (0-10) son las NOTAS.
     
-    SALIDA CSV (3 columnas): "Alumno", "Materia", "Nota".
-    - Alumno: Texto completo (ej: "PEREZ, JUAN").
-    - Materia: Abreviatura.
-    - Nota: Número.
+    SALIDA CSV OBLIGATORIA (3 columnas):
+    Alumno, Materia, Nota
     
-    Texto:
-    {text_data[:15000]}
+    Ejemplo de lógica:
+    Si la fila es: "PEREZ, JUAN | ING1 | 8 | MAT | 5"
+    Genera:
+    PEREZ, JUAN, ING1, 8
+    PEREZ, JUAN, MAT, 5
+    
+    DATOS A PROCESAR:
+    {text_data[:20000]}
     """
     try:
         response = client.chat.completions.create(
@@ -135,20 +149,24 @@ def process_data_with_ai(text_data, api_key, filename):
             messages=[{"role": "user", "content": prompt}], temperature=0
         )
         csv_str = response.choices[0].message.content.replace("```csv", "").replace("```", "").strip()
+        
+        # Validar que es CSV
         if "," not in csv_str: return None
         
         df = pd.read_csv(io.StringIO(csv_str))
         
-        # Normalización forzosa de columnas
+        # Normalizar columnas a fuerza bruta si vienen 3
         if len(df.columns) == 3:
             df.columns = ['Alumno', 'Materia', 'Nota']
         
         # Aplicar limpieza de nombres
         if 'Alumno' in df.columns:
-            df['Alumno'] = df['Alumno'].apply(limpiar_nombre_alumno)
+            df['Alumno'] = df['Alumno'].apply(limpiar_nombre_completo)
             
         return df
-    except: return None
+    except Exception as e:
+        st.error(f"Error procesando con IA: {e}")
+        return None
 
 # --- GENERACIÓN DE TEXTOS AUTOMÁTICOS ---
 def generar_comentario_individual(alumno, datos_alumno):
@@ -193,7 +211,7 @@ def add_alumno_to_doc(doc, alumno, datos_alumno, media, suspensos, stats_mat):
             run = c[1].paragraphs[0].runs[0]
             run.font.color.rgb = RGBColor(255,0,0); run.bold = True
 
-    # PIE DE PÁGINA (FECHA Y FIRMA)
+    # PIE DE PÁGINA
     doc.add_paragraph("\n\n")
     now = datetime.now()
     meses = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
@@ -274,9 +292,10 @@ with st.sidebar:
     curso = st.text_input("Curso", "2024-2025")
     st.markdown("---")
     uploaded_files = st.file_uploader("📂 Subir Actas", type=['xlsx', 'pdf', 'docx', 'doc'], accept_multiple_files=True, key=f"up_{st.session_state.uploader_key}")
+    
     if uploaded_files and st.session_state.data is None:
-        if st.button("Analizar", type="primary"):
-            if not api_key: st.error("Falta API Key")
+        if st.button("Analizar Datos", type="primary"):
+            if not api_key: st.error("Falta la API Key")
             else:
                 dfs = []
                 bar = st.progress(0)
@@ -286,19 +305,23 @@ with st.sidebar:
                         try: df_t = pd.read_excel(f)
                         except: pass
                     elif f.name.endswith('.pdf'):
-                        txt = get_pdf_text(f)
+                        # Usar el nuevo extractor de TABLAS
+                        txt = get_pdf_content(f)
                         if txt: df_t = process_data_with_ai(txt, api_key, f.name)
                     elif 'doc' in f.name:
                         txt = extract_text_from_docx(f)
                         if txt: df_t = process_data_with_ai(txt, api_key, f.name)
+                    
                     if df_t is not None: dfs.append(df_t)
                     bar.progress((i+1)/len(uploaded_files))
+                
                 if dfs:
                     st.session_state.data = pd.concat(dfs, ignore_index=True)
                     st.rerun()
-                else: st.error("No se extrajeron datos.")
+                else: st.error("No se extrajeron datos. El PDF puede ser imagen o estar vacío.")
+
     if st.session_state.data is not None:
-        if st.button("🔄 Subir nuevo"): reiniciar_app()
+        if st.button("🔄 Subir nuevo archivo"): reiniciar_app()
 
 st.title("Acta de Evaluación")
 col_b1, col_b2, col_b3 = st.columns([1,1,1])
@@ -308,14 +331,16 @@ col_b3.info(f"📅 **Curso:** {curso}")
 
 if st.session_state.data is not None:
     df = st.session_state.data
-    # Normalización de columnas
+    # Normalización
     if len(df.columns) >= 3:
         cols = list(df.columns); cols[0]='Alumno'; cols[1]='Materia'; cols[2]='Nota'
         df.columns = cols
     df = df[['Alumno', 'Materia', 'Nota']]
     
     # Limpieza nombres
-    df['Alumno'] = df['Alumno'].apply(limpiar_nombre_alumno)
+    df['Alumno'] = df['Alumno'].apply(limpiar_nombre_completo)
+    
+    # Limpieza datos
     df = df.drop_duplicates(subset=['Alumno', 'Materia'], keep='last')
     df['Nota'] = pd.to_numeric(df['Nota'], errors='coerce')
     df['Aprobado'] = df['Nota'] >= 5
@@ -348,6 +373,7 @@ if st.session_state.data is not None:
         with c2:
             fig_b, ax_b = plt.subplots(figsize=(4,3)); ax_b.bar(['0','1','2','3','>3'], [cero,uno,dos,tres,mas_tres], color='#3498db'); st.pyplot(fig_b)
             
+        # Graficas para word
         fig_d, ax_d = plt.subplots(figsize=(5,4)); bars_d = ax_d.bar(['0', '1', '2', '>2'], [cero, uno, dos, tres+mas_tres], color='#3498db'); ax_d.bar_label(bars_d)
         fig_m, ax_m = plt.subplots(figsize=(10,5)); d_gf = stats_mat.sort_values('Media', ascending=False); bars_m = ax_m.bar(d_gf['Materia'], d_gf['Media'], color='#9b59b6'); ax_m.bar_label(bars_m, fmt='%.2f')
         fig_pr, ax_pr = plt.subplots(figsize=(8,3)); ax_pr.bar(['Sí', 'No'], [pasan, no_pasan], color=['green', 'red'])
