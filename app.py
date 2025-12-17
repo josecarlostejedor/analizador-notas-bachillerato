@@ -8,10 +8,10 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 import openai
 import io
 import pdfplumber
-import PyPDF2  # Recuperamos esto como respaldo
+import PyPDF2
 import docx
 from datetime import datetime
-import re # Para limpieza de texto avanzada
+import re
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(
@@ -55,21 +55,19 @@ def reiniciar_app():
     st.session_state.uploader_key += 1
     st.rerun()
 
-# --- FUNCIONES DE EXTRACCIÓN ROBUSTAS ---
+# --- FUNCIONES DE EXTRACCIÓN ROBUSTA ---
 def get_pdf_text(file):
-    """Intenta extraer texto con múltiples métodos"""
+    """Intenta extraer texto con múltiples métodos para asegurar datos"""
     text = ""
-    
-    # Método 1: PDFPlumber (Mejor para tablas visuales)
+    # Método 1: PDFPlumber
     try:
         with pdfplumber.open(file) as pdf:
             for page in pdf.pages:
                 extracted = page.extract_text(x_tolerance=2, y_tolerance=2)
-                if extracted:
-                    text += extracted + "\n"
+                if extracted: text += extracted + "\n"
     except: pass
     
-    # Método 2: PyPDF2 (Respaldo si el anterior falla o da vacío)
+    # Método 2: PyPDF2 (Respaldo)
     if len(text) < 50: 
         try:
             file.seek(0)
@@ -78,7 +76,6 @@ def get_pdf_text(file):
             for page in pdf_reader.pages:
                 text += page.extract_text() or ""
         except: pass
-        
     return text
 
 def extract_text_from_docx(file):
@@ -87,18 +84,18 @@ def extract_text_from_docx(file):
         return "\n".join([para.text for para in doc.paragraphs])
     except: return ""
 
-# --- LIMPIEZA DE DATOS (PYTHON PURO) ---
+# --- LIMPIEZA DE DATOS (APELLIDOS Y NOMBRE) ---
 def limpiar_nombre_alumno(texto):
     """
-    1. Quita números iniciales (1 ANTHONY -> ANTHONY)
-    2. Formatea Apellidos, Nombre -> Nombre Apellidos
+    1. Quita números iniciales (ej: "1 ANTHONY" -> "ANTHONY")
+    2. Convierte "APELLIDOS, NOMBRE" -> "NOMBRE APELLIDOS"
     """
     if not isinstance(texto, str): return str(texto)
     
-    # Paso 1: Quitar números e índices al principio (ej: "1 ", "2.")
+    # 1. Quitar índices numéricos al inicio (ej: "1 ", "2. ")
     texto_limpio = re.sub(r'^\d+[\.\-\s]+', '', texto.strip())
     
-    # Paso 2: Ordenar Nombre Apellidos
+    # 2. Reordenar si hay coma
     if ',' in texto_limpio:
         partes = texto_limpio.split(',')
         if len(partes) >= 2:
@@ -109,31 +106,25 @@ def limpiar_nombre_alumno(texto):
     return texto_limpio
 
 def process_data_with_ai(text_data, api_key, filename):
-    if not text_data or len(text_data) < 10: 
-        return None
-        
+    if not text_data or len(text_data) < 10: return None
     client = openai.OpenAI(api_key=api_key)
     
     prompt = f"""
-    Analiza este texto de acta de evaluación ('{filename}').
+    Analiza el texto de este acta ('{filename}').
     
-    OBJETIVO: Extraer calificaciones.
-    
-    PROBLEMA CONOCIDO:
-    - Las notas (números del 1 al 10) suelen estar agrupadas al final o a la derecha.
-    - Los nombres tienen un índice delante (ej: "1 PEREZ, JUAN"). ESE "1" NO ES LA NOTA.
+    PROBLEMA DE LECTURA (CRÍTICO):
+    1. Delante de cada nombre hay un número de lista (1, 2, 3...). ¡NO ES UNA NOTA!
+       Ejemplo: "1 ANTHONY..." -> El '1' es índice. Si luego ves un 8, la nota es 8.
+    2. Las notas están separadas del nombre, a menudo al final de la línea o bloque.
     
     INSTRUCCIONES:
-    1. Extrae cada alumno con su asignatura y su nota REAL.
-    2. Si ves un número de índice delante del nombre, IGNÓRALO.
-    3. Asocia la primera fila de notas con el primer alumno.
+    1. Extrae el NOMBRE COMPLETO (incluyendo Apellidos y coma si la hay).
+    2. Extrae la NOTA REAL (0-10). Ignora el número de índice inicial.
     
-    SALIDA CSV (3 columnas):
-    Alumno, Materia, Nota
-    
-    Ejemplo de salida esperada:
-    PEREZ GOMEZ, JUAN, MAT, 8
-    PEREZ GOMEZ, JUAN, LE, 5
+    SALIDA CSV (3 columnas): "Alumno", "Materia", "Nota".
+    - Alumno: Texto completo (ej: "PEREZ, JUAN").
+    - Materia: Abreviatura.
+    - Nota: Número.
     
     Texto:
     {text_data[:15000]}
@@ -143,53 +134,39 @@ def process_data_with_ai(text_data, api_key, filename):
             model="gpt-4o",
             messages=[{"role": "user", "content": prompt}], temperature=0
         )
-        content = response.choices[0].message.content
-        # Limpieza de bloques de código markdown
-        csv_str = content.replace("```csv", "").replace("```", "").strip()
-        
-        # Validación mínima
+        csv_str = response.choices[0].message.content.replace("```csv", "").replace("```", "").strip()
         if "," not in csv_str: return None
         
         df = pd.read_csv(io.StringIO(csv_str))
         
-        # FUERZA BRUTA PARA NOMBRES DE COLUMNA
-        # Si tiene 3 columnas, las renombramos nosotros para evitar errores
+        # Normalización forzosa de columnas
         if len(df.columns) == 3:
             df.columns = ['Alumno', 'Materia', 'Nota']
         
-        # Aplicar limpieza de nombres (Quitar índice y reordenar)
+        # Aplicar limpieza de nombres en Python (más seguro que la IA)
         if 'Alumno' in df.columns:
             df['Alumno'] = df['Alumno'].apply(limpiar_nombre_alumno)
             
         return df
-        
-    except Exception as e:
-        st.error(f"Error IA: {str(e)}")
-        return None
+    except: return None
 
 # --- GENERACIÓN DE TEXTOS AUTOMÁTICOS ---
 def generar_comentario_individual(alumno, datos_alumno):
     suspensos = datos_alumno[datos_alumno['Nota'] < 5]
-    num_suspensos = len(suspensos)
-    lista_suspensas = suspensos['Materia'].tolist()
-    
-    txt = f"El alumno/a {alumno} tiene actualmente {num_suspensos} materias suspensas."
-    
-    if num_suspensos == 0:
-        txt = "No tiene ninguna materia suspensa. ¡Excelente trabajo! Se recomienda mantener la constancia."
-    elif num_suspensos == 1:
-        txt += f" La materia pendiente es: {', '.join(lista_suspensas)}. Recuperación factible con plan de refuerzo."
-    elif num_suspensos == 2:
-        txt += f" Las materias son: {', '.join(lista_suspensas)}. Situación límite. Se aconseja refuerzo urgente."
-    else:
-        txt += f" Las materias son: {', '.join(lista_suspensas)}. Situación preocupante que compromete la promoción."
+    num = len(suspensos)
+    lista = suspensos['Materia'].tolist()
+    txt = f"El alumno/a {alumno} tiene actualmente {num} materias suspensas."
+    if num == 0: txt = "No tiene ninguna materia suspensa. ¡Excelente trabajo! Se recomienda mantener la constancia."
+    elif num == 1: txt += f" La materia es: {', '.join(lista)}. Recuperación factible con refuerzo."
+    elif num == 2: txt += f" Las materias son: {', '.join(lista)}. Situación límite. Se aconseja organización urgente."
+    else: txt += f" Las materias son: {', '.join(lista)}. Situación preocupante que compromete la promoción."
     return txt
 
 def generar_valoracion_detallada(res):
     txt = f"Nota media global: {res['media_grupo']:.2f}. "
     if res['pct_pasan'] >= 85: txt += "Promoción excelente."
     elif res['pct_pasan'] >= 70: txt += "Promoción satisfactoria."
-    else: txt += "Promoción baja, se requiere intervención."
+    else: txt += "Promoción baja, requiere intervención."
     return txt
 
 # --- WORD INDIVIDUAL ---
@@ -202,27 +179,209 @@ def add_alumno_to_doc(doc, alumno, datos_alumno, media, suspensos, stats_mat):
     p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
     
     doc.add_heading('Detalle de Calificaciones', level=2)
-    t = doc.add_table(rows=1, cols=4)
-    t.style = 'Table Grid'
+    t = doc.add_table(rows=1, cols=4); t.style = 'Table Grid'
     hdr = t.rows[0].cells
-    hdr[0].text = 'Materia'; hdr[1].text = 'Nota'; hdr[2].text = 'Media Clase'; hdr[3].text = 'Dif.'
+    hdr[0].text='Materia'; hdr[1].text='Nota'; hdr[2].text='Media Clase'; hdr[3].text='Dif.'
     
     medias = stats_mat.set_index('Materia')['Media'].to_dict()
     for _, row in datos_alumno.iterrows():
         c = t.add_row().cells
-        c[0].text = str(row['Materia'])
-        c[1].text = str(row['Nota'])
-        media_c = medias.get(row['Materia'], 0)
-        c[2].text = f"{media_c:.2f}"
-        dif = row['Nota'] - media_c
-        c[3].text = f"{dif:+.2f}"
-        
+        c[0].text = str(row['Materia']); c[1].text = str(row['Nota'])
+        mc = medias.get(row['Materia'], 0); c[2].text = f"{mc:.2f}"
+        dif = row['Nota'] - mc; c[3].text = f"{dif:+.2f}"
         if row['Nota'] < 5:
             run = c[1].paragraphs[0].runs[0]
-            run.font.color.rgb = RGBColor(255, 0, 0)
-            run.bold = True
+            run.font.color.rgb = RGBColor(255,0,0); run.bold = True
 
-    # PIE DE PÁGINA
+    # PIE DE PÁGINA (FECHA Y FIRMA)
     doc.add_paragraph("\n\n")
     now = datetime.now()
-    meses = ["enero"
+    # Corrección de sintaxis lista meses
+    meses = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
+    fecha_str = f"En Salamanca, a {now.day} de {meses[now.month-1]} de {now.year}"
+    
+    p_f = doc.add_paragraph(fecha_str); p_f.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    doc.add_paragraph("\n")
+    p_s = doc.add_paragraph("El Tutor del grupo:"); p_s.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    p_s.add_run("\n\n\n")
+    p_s.add_run("D. José Carlos Tejedor Lorenzo").bold = True
+
+def crear_informe_individual(alumno, datos_alumno, media, suspensos, stats_mat):
+    doc = Document()
+    add_alumno_to_doc(doc, alumno, datos_alumno, media, suspensos, stats_mat)
+    bio = io.BytesIO(); doc.save(bio); bio.seek(0)
+    return bio
+
+def generar_informe_todos_alumnos(df, stats_al, stats_mat):
+    doc = Document()
+    for i, al in enumerate(stats_al['Alumno'].unique()):
+        d_al = df[df['Alumno'] == al]
+        info = stats_al[stats_al['Alumno'] == al].iloc[0]
+        add_alumno_to_doc(doc, al, d_al, info['Media'], info['Suspensos'], stats_mat)
+        if i < len(stats_al)-1: doc.add_page_break()
+    bio = io.BytesIO(); doc.save(bio); bio.seek(0)
+    return bio
+
+# --- WORD GLOBAL Y PADRES ---
+def generate_global_report(datos_resumen, plots, ranking_materias, centro, grupo):
+    doc = Document()
+    s = doc.sections[0]; s.orientation = WD_ORIENT.LANDSCAPE; s.page_width, s.page_height = s.page_height, s.page_width
+    doc.add_heading(f'Informe de Evaluación - {centro}', 0)
+    doc.add_heading('Datos Generales', 1)
+    doc.add_paragraph(f"Media: {datos_resumen['media_grupo']:.2f} | Promoción: {datos_resumen['pasan']} ({datos_resumen['pct_pasan']:.1f}%)")
+    doc.add_paragraph(datos_resumen['valoracion']).italic = True
+    doc.add_heading('Gráficas', 1)
+    if len(plots) >= 4:
+        t = doc.add_table(rows=2, cols=2); t.autofit = True
+        t.rows[0].cells[0].paragraphs[0].add_run().add_picture(plots[0], width=Inches(4.5))
+        t.rows[0].cells[1].paragraphs[0].add_run().add_picture(plots[3], width=Inches(4.5))
+        t.rows[1].cells[0].paragraphs[0].add_run().add_picture(plots[2], width=Inches(4.5))
+        t.rows[1].cells[1].paragraphs[0].add_run().add_picture(plots[1], width=Inches(4.5))
+    bio = io.BytesIO(); doc.save(bio); bio.seek(0)
+    return bio
+
+def generate_parents_report(res, stats_mat, plot_suspensos, plot_pct_materias):
+    doc = Document()
+    s = doc.sections[0]; s.orientation = WD_ORIENT.LANDSCAPE; s.page_width, s.page_height = s.page_height, s.page_width
+    doc.add_heading('RESUMEN DE EVALUACIÓN PARA FAMILIAS', 0).alignment = WD_ALIGN_PARAGRAPH.CENTER
+    t = doc.add_table(rows=1, cols=2); t.autofit = False
+    t.columns[0].width = Inches(5); t.columns[1].width = Inches(5)
+    
+    c1 = t.rows[0].cells[0].paragraphs[0]
+    c1.add_run("Resumen estadístico.\n\n").italic = True
+    c1.add_run(f"• Promocionan: {res['pasan']} ({res['pct_pasan']:.1f}%)\n")
+    c1.add_run(f"• No promocionan: {res['no_pasan']} ({res['pct_no_pasan']:.1f}%)\n")
+    c1.add_run(f"• Media suspensos: {res['media_suspensos_grupo']:.2f}\n\n")
+    c1.add_run("Aprobados por materia:\n").bold = True
+    for _, row in stats_mat.iterrows(): c1.add_run(f"- {row['Materia']}: {row['Pct_Aprobados']:.1f}%\n")
+    
+    c2 = t.rows[0].cells[1]
+    c2.paragraphs[0].add_run("Materias no superadas:\n").bold = True
+    c2.paragraphs[0].add_run().add_picture(plot_suspensos, width=Inches(4.5))
+    c2.add_paragraph("\n% Suspensos por Materia:\n").bold = True
+    c2.paragraphs[1].add_run().add_picture(plot_pct_materias, width=Inches(4.5))
+    
+    bio = io.BytesIO(); doc.save(bio); bio.seek(0)
+    return bio
+
+# --- INTERFAZ ---
+with st.sidebar:
+    st.image("https://cdn-icons-png.flaticon.com/512/2991/2991148.png", width=50)
+    st.title("Configuración")
+    api_key = st.text_input("🔑 API Key OpenAI", type="password")
+    st.markdown("---")
+    centro = st.text_input("Centro", "IES Lucía de Medrano")
+    grupo = st.text_input("Grupo", "1º BACH 4")
+    curso = st.text_input("Curso", "2024-2025")
+    st.markdown("---")
+    uploaded_files = st.file_uploader("📂 Subir Actas", type=['xlsx', 'pdf', 'docx', 'doc'], accept_multiple_files=True, key=f"up_{st.session_state.uploader_key}")
+    if uploaded_files and st.session_state.data is None:
+        if st.button("Analizar", type="primary"):
+            if not api_key: st.error("Falta API Key")
+            else:
+                dfs = []
+                bar = st.progress(0)
+                for i, f in enumerate(uploaded_files):
+                    df_t = None
+                    if f.name.endswith('.xlsx'):
+                        try: df_t = pd.read_excel(f)
+                        except: pass
+                    elif f.name.endswith('.pdf'):
+                        txt = get_pdf_text(f)
+                        if txt: df_t = process_data_with_ai(txt, api_key, f.name)
+                    elif 'doc' in f.name:
+                        txt = extract_text_from_docx(f)
+                        if txt: df_t = process_data_with_ai(txt, api_key, f.name)
+                    if df_t is not None: dfs.append(df_t)
+                    bar.progress((i+1)/len(uploaded_files))
+                if dfs:
+                    st.session_state.data = pd.concat(dfs, ignore_index=True)
+                    st.rerun()
+                else: st.error("No se extrajeron datos.")
+    if st.session_state.data is not None:
+        if st.button("🔄 Subir nuevo"): reiniciar_app()
+
+st.title("Acta de Evaluación")
+col_b1, col_b2, col_b3 = st.columns([1,1,1])
+col_b1.info(f"🏫 **Centro:** {centro}")
+col_b2.info(f"👥 **Grupo:** {grupo}")
+col_b3.info(f"📅 **Curso:** {curso}")
+
+if st.session_state.data is not None:
+    df = st.session_state.data
+    # Normalización de columnas
+    if len(df.columns) >= 3:
+        cols = list(df.columns); cols[0]='Alumno'; cols[1]='Materia'; cols[2]='Nota'
+        df.columns = cols
+    df = df[['Alumno', 'Materia', 'Nota']]
+    
+    # Limpieza nombres
+    df['Alumno'] = df['Alumno'].apply(limpiar_nombre_alumno)
+    df = df.drop_duplicates(subset=['Alumno', 'Materia'], keep='last')
+    df['Nota'] = pd.to_numeric(df['Nota'], errors='coerce')
+    df['Aprobado'] = df['Nota'] >= 5
+    
+    stats_al = df.groupby('Alumno').agg(Suspensos=('Nota', lambda x: (x<5).sum()), Media=('Nota', 'mean')).reset_index()
+    stats_mat = df.groupby('Materia').agg(Total=('Nota', 'count'), Aprobados=('Aprobado', 'sum'), Suspensos=('Nota', lambda x: (x<5).sum()), Media=('Nota', 'mean')).reset_index()
+    stats_mat['Pct_Aprobados'] = (stats_mat['Aprobados']/stats_mat['Total'])*100
+    stats_mat['Pct_Suspensos'] = (stats_mat['Suspensos']/stats_mat['Total'])*100
+    
+    total = len(stats_al); media_gr = df['Nota'].mean()
+    cero = stats_al[stats_al['Suspensos']==0].shape[0]
+    uno = stats_al[stats_al['Suspensos']==1].shape[0]
+    dos = stats_al[stats_al['Suspensos']==2].shape[0]
+    tres = stats_al[stats_al['Suspensos']==3].shape[0]
+    mas_tres = stats_al[stats_al['Suspensos']>3].shape[0]
+    pasan = cero+uno+dos; no_pasan = tres+mas_tres
+    base = total if total>0 else 1
+    
+    res = {'total_alumnos': total, 'media_grupo': media_gr, 'media_suspensos_grupo': stats_al['Suspensos'].mean(),
+           'pasan': pasan, 'pct_pasan': (pasan/base)*100, 'no_pasan': no_pasan, 'pct_no_pasan': (no_pasan/base)*100, 'pct_mas_dos': ((tres+mas_tres)/base)*100}
+    res['valoracion'] = generar_valoracion_detallada(res)
+
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 General", "📚 Materias", "🎓 Editor", "📄 Informes", "👨‍👩‍👧 Padres"])
+    
+    with tab1:
+        st.metric("Media Grupo", f"{media_gr:.2f}")
+        c1,c2 = st.columns(2)
+        with c1: 
+            fig_p, ax_p = plt.subplots(figsize=(4,3)); ax_p.pie([pasan, no_pasan], labels=['Sí', 'No'], autopct='%1.f%%', colors=['#2ecc71','#e74c3c']); st.pyplot(fig_p)
+        with c2:
+            fig_b, ax_b = plt.subplots(figsize=(4,3)); ax_b.bar(['0','1','2','3','>3'], [cero,uno,dos,tres,mas_tres], color='#3498db'); st.pyplot(fig_b)
+            
+        fig_d, ax_d = plt.subplots(figsize=(5,4)); bars_d = ax_d.bar(['0', '1', '2', '>2'], [cero, uno, dos, tres+mas_tres], color='#3498db'); ax_d.bar_label(bars_d)
+        fig_m, ax_m = plt.subplots(figsize=(10,5)); d_gf = stats_mat.sort_values('Media', ascending=False); bars_m = ax_m.bar(d_gf['Materia'], d_gf['Media'], color='#9b59b6'); ax_m.bar_label(bars_m, fmt='%.2f')
+        fig_pr, ax_pr = plt.subplots(figsize=(8,3)); ax_pr.bar(['Sí', 'No'], [pasan, no_pasan], color=['green', 'red'])
+        
+        plots = []
+        for f in [fig_p, fig_d, fig_m, fig_pr]:
+            buf = io.BytesIO(); f.savefig(buf, format='png', bbox_inches='tight'); buf.seek(0); plots.append(buf)
+        
+        if st.button("📄 Informe General Word"):
+            st.download_button("Descargar", generate_global_report(res, plots, stats_mat, centro, grupo), f"Global_{grupo}.docx", type="primary")
+
+    with tab2: st.dataframe(stats_mat.style.format({'Pct_Aprobados':'{:.1f}%'}), use_container_width=True)
+    
+    with tab3:
+        st.markdown("### Editor"); piv = df.pivot_table(index='Alumno', columns='Materia', values='Nota', aggfunc='first')
+        ed = st.data_editor(piv, use_container_width=True)
+        if st.button("🔄 Recalcular"):
+            try:
+                new_df = ed.reset_index().melt(id_vars='Alumno', var_name='Materia', value_name='Nota')
+                new_df.dropna(subset=['Nota'], inplace=True); st.session_state.data = new_df; st.rerun()
+            except: pass
+
+    with tab4:
+        c1, c2 = st.columns(2)
+        with c1:
+            sel = st.selectbox("Alumno", stats_al['Alumno'].unique())
+            if sel:
+                inf = stats_al[stats_al['Alumno']==sel].iloc[0]
+                st.info(generar_comentario_individual(sel, df[df['Alumno']==sel]))
+                st.download_button("Descargar", crear_informe_individual(sel, df[df['Alumno']==sel], inf['Media'], inf['Suspensos'], stats_mat), f"{sel}.docx")
+        with c2:
+            if st.button("🚀 Informe TODOS"):
+                st.download_button("Descargar ZIP", generar_informe_todos_alumnos(df, stats_al, stats_mat), f"Todos_{grupo}.docx", type="primary")
+
+    with tab5:
+        fig_p1, ax_p1 = plt.subplots(figsize=(6,4)); bars_p = ax_p1.bar(['0','1','2','3','>3'], [cero,uno,dos,tres,mas_tres], color=['#2ecc71','#f1c40f','#e67e22','#e74c3c','#c0392b']); ax_p1.bar_label(bars
