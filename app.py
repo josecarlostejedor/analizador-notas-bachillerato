@@ -59,7 +59,8 @@ def extract_text_with_pdfplumber(file):
     try:
         with pdfplumber.open(file) as pdf:
             for page in pdf.pages:
-                text_content += page.extract_text(x_tolerance=2, y_tolerance=2) + "\n"
+                # Extraer con máxima densidad para no perder comas ni números
+                text_content += page.extract_text(x_tolerance=1, y_tolerance=1) + "\n"
         return text_content
     except Exception as e:
         return ""
@@ -74,22 +75,27 @@ def process_data_with_ai(text_data, api_key, filename):
     if not text_data: return None
     client = openai.OpenAI(api_key=api_key)
     
+    # --- PROMPT MAESTRO CORREGIDO ---
     prompt = f"""
-    Analiza el texto de este acta de evaluación ('{filename}').
+    Analiza este texto de un acta de evaluación académica ('{filename}').
     
-    ESTRUCTURA DEL PDF:
-    1. Lista de alumnos (a veces con número delante, ej "1. APELLIDO, NOMBRE").
-    2. Bloque de notas numéricas al final.
-    3. Asocia en orden: 1er alumno -> 1ª fila de notas.
+    OBJETIVO 1: RECUPERAR NOMBRES COMPLETOS
+    - El formato en el PDF es: "ÍNDICE APELLIDO1 APELLIDO2, NOMBRE".
+    - Ejemplo: "1 ANTHONY IGBIARE, VICTORY ITOHAN".
+    - DEBES extraer la cadena completa "ANTHONY IGBIARE, VICTORY ITOHAN".
+    - NO pierdas los apellidos. La coma "," separa apellidos de nombre.
     
-    TAREA CRÍTICA:
-    Genera un CSV con 3 columnas EXACTAS: "Alumno", "Materia", "Nota".
+    OBJETIVO 2: PRECISIÓN EN LAS NOTAS (CORRECCIÓN CRÍTICA)
+    - Las notas suelen estar en un bloque separado o alineado a la derecha.
+    - ¡CUIDADO!: El número "1" delante de "ANTHONY" es su ÍNDICE DE LISTA, NO ES SU NOTA.
+    - Si para el primer alumno ves "1" y luego "8", la nota es "8". El "1" es el número de lista. Ignora el índice.
+    - Asocia la fila 1 de notas al alumno 1, la fila 2 al alumno 2, etc.
     
-    REGLAS:
-    - Columna Alumno: EXTRAE EL NOMBRE COMPLETO (Apellidos y Nombre). Ej: "PEREZ GOMEZ, JUAN".
+    SALIDA REQUERIDA (CSV):
+    Columnas exactas: "Alumno", "Materia", "Nota".
+    - Alumno: Apellidos y Nombre completos (con la coma si aparece).
     - Materia: Abreviaturas (ING1, EF, etc).
-    - Nota: Numérica.
-    - SOLO CSV. Sin explicaciones.
+    - Nota: Numérico (0-10).
     
     Texto:
     {text_data[:15000]}
@@ -104,9 +110,12 @@ def process_data_with_ai(text_data, api_key, filename):
         return pd.read_csv(io.StringIO(csv))
     except: return None
 
-# --- FORMATEO DE NOMBRE (JULIA AGUADERO LUCAS) ---
+# --- FORMATEO DE NOMBRE ---
 def formatear_nombre_bonito(texto):
-    """Convierte 'AGUADERO LUCAS, JULIA' -> 'JULIA AGUADERO LUCAS'"""
+    """
+    Convierte: 'ANTHONY IGBIARE, VICTORY ITOHAN' 
+    En: 'VICTORY ITOHAN ANTHONY IGBIARE' (Nombre + Apellidos)
+    """
     try:
         if isinstance(texto, str) and ',' in texto:
             partes = texto.split(',')
@@ -116,7 +125,8 @@ def formatear_nombre_bonito(texto):
                 return f"{nombre} {apellidos}"
     except:
         pass
-    return texto
+    # Si no tiene coma, devolvemos el texto limpio tal cual
+    return str(texto).strip()
 
 # --- GENERACIÓN DE TEXTOS AUTOMÁTICOS ---
 def generar_comentario_individual(alumno, datos_alumno):
@@ -222,6 +232,7 @@ def generate_global_report(datos_resumen, plots, ranking_materias, centro, grupo
         t.rows[0].cells[1].paragraphs[0].add_run().add_picture(plots[3], width=Inches(4.5))
         t.rows[1].cells[0].paragraphs[0].add_run().add_picture(plots[2], width=Inches(4.5))
         t.rows[1].cells[1].paragraphs[0].add_run().add_picture(plots[1], width=Inches(4.5))
+
     bio = io.BytesIO(); doc.save(bio); bio.seek(0)
     return bio
 
@@ -263,7 +274,7 @@ with st.sidebar:
     api_key = st.text_input("🔑 API Key OpenAI", type="password")
     st.markdown("---")
     centro = st.text_input("Centro", "IES Lucía de Medrano")
-    grupo = st.text_input("Grupo", "1º BACH 4")
+    grupo = st.text_input("Grupo", "1º BACH 7")
     curso = st.text_input("Curso", "2024-2025")
     st.markdown("---")
     uploaded_files = st.file_uploader("📂 Subir Actas", type=['xlsx', 'pdf', 'docx', 'doc'], accept_multiple_files=True, key=f"up_{st.session_state.uploader_key}")
@@ -309,22 +320,20 @@ col_b2.info(f"👥 **Grupo:** {grupo}")
 col_b3.info(f"📅 **Curso:** {curso}")
 
 if st.session_state.data is not None:
-    # --- BLOQUE CRÍTICO DE CORRECCIÓN (SOLUCIÓN ERROR COLUMNAS) ---
+    # --- BLOQUE CRÍTICO DE CORRECCIÓN (SOLUCIÓN FINAL) ---
     df_raw = st.session_state.data
     
-    # 1. Si hay 3 columnas, asumimos orden [Alumno, Materia, Nota] y renombramos a la fuerza
+    # 1. Fuerza bruta: Si hay 3 columnas, asumimos orden [Alumno, Materia, Nota]
     if len(df_raw.columns) == 3:
         df_raw.columns = ['Alumno', 'Materia', 'Nota']
     else:
-        # Intento de mapeo tradicional si hay más columnas
         cols_map = {'Student': 'Alumno', 'Nombre': 'Alumno', 'Apellidos y Nombre': 'Alumno', 'Subject': 'Materia', 'Grade': 'Nota'}
         df_raw.rename(columns=cols_map, inplace=True)
 
-    # 2. Verificar si conseguimos tener la columna 'Alumno'
     if 'Alumno' not in df_raw.columns:
         st.error(f"❌ Error: La IA no detectó las columnas. Columnas encontradas: {list(df_raw.columns)}")
     else:
-        # 3. APLICAR FORMATEO DE NOMBRE (APELLIDOS, NOMBRE -> NOMBRE APELLIDOS)
+        # 2. APLICAR FORMATEO DE NOMBRE (APELLIDOS, NOMBRE -> NOMBRE APELLIDOS)
         df_raw['Alumno'] = df_raw['Alumno'].apply(formatear_nombre_bonito)
         
         # Limpieza estándar
