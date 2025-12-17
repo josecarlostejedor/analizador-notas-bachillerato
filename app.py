@@ -57,7 +57,7 @@ def reiniciar_app():
 
 # --- FUNCIONES DE EXTRACCIÓN ROBUSTA ---
 def get_pdf_text(file):
-    """Intenta extraer texto con múltiples métodos para asegurar datos"""
+    """Intenta extraer texto con múltiples métodos"""
     text = ""
     # Método 1: PDFPlumber
     try:
@@ -92,7 +92,7 @@ def limpiar_nombre_alumno(texto):
     """
     if not isinstance(texto, str): return str(texto)
     
-    # 1. Quitar índices numéricos al inicio (ej: "1 ", "2. ")
+    # 1. Quitar índices numéricos al inicio
     texto_limpio = re.sub(r'^\d+[\.\-\s]+', '', texto.strip())
     
     # 2. Reordenar si hay coma
@@ -115,7 +115,7 @@ def process_data_with_ai(text_data, api_key, filename):
     PROBLEMA DE LECTURA (CRÍTICO):
     1. Delante de cada nombre hay un número de lista (1, 2, 3...). ¡NO ES UNA NOTA!
        Ejemplo: "1 ANTHONY..." -> El '1' es índice. Si luego ves un 8, la nota es 8.
-    2. Las notas están separadas del nombre, a menudo al final de la línea o bloque.
+    2. Las notas están separadas del nombre, al final del bloque.
     
     INSTRUCCIONES:
     1. Extrae el NOMBRE COMPLETO (incluyendo Apellidos y coma si la hay).
@@ -143,7 +143,7 @@ def process_data_with_ai(text_data, api_key, filename):
         if len(df.columns) == 3:
             df.columns = ['Alumno', 'Materia', 'Nota']
         
-        # Aplicar limpieza de nombres en Python (más seguro que la IA)
+        # Aplicar limpieza de nombres
         if 'Alumno' in df.columns:
             df['Alumno'] = df['Alumno'].apply(limpiar_nombre_alumno)
             
@@ -196,7 +196,6 @@ def add_alumno_to_doc(doc, alumno, datos_alumno, media, suspensos, stats_mat):
     # PIE DE PÁGINA (FECHA Y FIRMA)
     doc.add_paragraph("\n\n")
     now = datetime.now()
-    # Corrección de sintaxis lista meses
     meses = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
     fecha_str = f"En Salamanca, a {now.day} de {meses[now.month-1]} de {now.year}"
     
@@ -384,4 +383,17 @@ if st.session_state.data is not None:
                 st.download_button("Descargar ZIP", generar_informe_todos_alumnos(df, stats_al, stats_mat), f"Todos_{grupo}.docx", type="primary")
 
     with tab5:
-        fig_p1, ax_p1 = plt.subplots(figsize=(6,4)); bars_p = ax_p1.bar(['0','1','2','3','>3'], [cero,uno,dos,tres,mas_tres], color=['#2ecc71','#f1c40f','#e67e22','#e74c3c','#c0392b']); ax_p1.bar_label(bars
+        fig_p1, ax_p1 = plt.subplots(figsize=(6,4))
+        bars_p = ax_p1.bar(['0','1','2','3','>3'], [cero,uno,dos,tres,mas_tres], color=['#2ecc71','#f1c40f','#e67e22','#e74c3c','#c0392b'])
+        ax_p1.bar_label(bars_p)
+        
+        fig_p2, ax_p2 = plt.subplots(figsize=(6,4))
+        df_p2 = stats_mat.sort_values('Pct_Suspensos')
+        ax_p2.barh(df_p2['Materia'], df_p2['Pct_Suspensos'], color='#3498db')
+        
+        c1,c2 = st.columns(2); c1.pyplot(fig_p1); c2.pyplot(fig_p2)
+        b1 = io.BytesIO(); fig_p1.savefig(b1, format='png', bbox_inches='tight'); b1.seek(0)
+        b2 = io.BytesIO(); fig_p2.savefig(b2, format='png', bbox_inches='tight'); b2.seek(0)
+        if st.button("📄 Word Padres"):
+            st.download_button("Descargar", generate_parents_report(res, stats_mat, b1, b2), f"Padres_{grupo}.docx", type="primary")
+else: st.info("Sube archivo")
