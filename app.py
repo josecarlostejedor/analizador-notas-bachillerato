@@ -56,12 +56,10 @@ def reiniciar_app():
 
 # --- FUNCIONES DE EXTRACCIÓN ---
 def get_pdf_text_content(file):
-    """Extrae el texto crudo manteniendo la disposición visual."""
     text_content = ""
     try:
         with pdfplumber.open(file) as pdf:
             for page in pdf.pages:
-                # x_tolerance ayuda a mantener columnas separadas visualmente
                 text_content += page.extract_text(x_tolerance=2, y_tolerance=2) + "\n"
         return text_content
     except Exception as e:
@@ -75,83 +73,55 @@ def extract_text_from_docx(file):
 
 # --- LIMPIEZA DE NOMBRES ---
 def limpiar_nombre_alumno(texto):
-    """
-    1. Quita números de lista al principio (1, 2...).
-    2. Gira "APELLIDOS, NOMBRE" a "NOMBRE APELLIDOS".
-    """
     if not isinstance(texto, str): return str(texto)
-    
-    # Limpiar espacios extra
     texto = texto.strip()
-    
-    # 1. Quitar número inicial (ej: "1 ANTHONY" -> "ANTHONY")
-    # Busca dígitos al inicio seguidos de espacio, punto o guion
-    texto = re.sub(r'^\d+[\.\-\s]+', '', texto)
-    
-    # 2. Reordenar nombre si hay coma
+    texto = re.sub(r'^\d+[\.\-\s]+', '', texto) # Quitar índice
     if ',' in texto:
         partes = texto.split(',')
         if len(partes) >= 2:
             apellidos = partes[0].strip()
             nombre = partes[1].strip()
             return f"{nombre} {apellidos}"
-            
     return texto
 
 def process_data_with_ai(text_data, api_key, filename):
-    if not text_data or len(text_data) < 10: 
-        return None
-        
+    if not text_data or len(text_data) < 10: return None
     client = openai.OpenAI(api_key=api_key)
     
-    # PROMPT DISEÑADO PARA EVITAR EL ERROR DE COLUMNAS
     prompt = f"""
-    Analiza el texto de este acta de evaluación ('{filename}').
+    Analiza el texto de este acta ('{filename}').
+    ESTRUCTURA:
+    1. Lista de alumnos (ej: "1. APELLIDOS, NOMBRE"). El número es índice, NO NOTA.
+    2. Las notas (0-10) están separadas.
+    3. Asocia cada alumno con sus notas en orden.
     
-    ESTRUCTURA DEL PDF:
-    1. Lista de alumnos (ej: "1. APELLIDO, NOMBRE"). 
-       IMPORTANTE: El número "1" es un índice, NO ES LA NOTA.
-    2. Las notas (0-10) suelen estar en un bloque separado o al final de la línea.
-    3. Asocia la fila de notas correcta a cada alumno.
-    
-    TAREA OBLIGATORIA:
-    Genera datos separados por la barra vertical '|'. NO USES COMAS para separar columnas.
+    TAREA:
+    Genera datos separados por '|'. NO USES COMAS.
     Formato: Alumno|Materia|Nota
     
     REGLAS:
-    - Alumno: Nombre COMPLETO tal cual aparece (ej: "PEREZ, JUAN"). NO resumas.
-    - Materia: Abreviatura (ING1, EF, etc).
+    - Alumno: Nombre COMPLETO (ej: "PEREZ, JUAN").
+    - Materia: Abreviatura.
     - Nota: Número decimal.
-    - Usa '|' como separador.
     
     Texto:
     {text_data[:20000]}
     """
-    
     try:
         response = client.chat.completions.create(
             model="gpt-4o",
-            messages=[{"role": "user", "content": prompt}], 
-            temperature=0
+            messages=[{"role": "user", "content": prompt}], temperature=0
         )
-        # Limpiar respuesta
-        raw_content = response.choices[0].message.content
-        csv_str = raw_content.replace("```csv", "").replace("```", "").strip()
-        
-        # Leemos usando el separador '|' para evitar errores con las comas del nombre
+        csv_str = response.choices[0].message.content.replace("```csv", "").replace("```", "").strip()
         df = pd.read_csv(io.StringIO(csv_str), sep='|', names=['Alumno', 'Materia', 'Nota'], engine='python')
-        
-        # Limpieza de nombres
         if 'Alumno' in df.columns:
             df['Alumno'] = df['Alumno'].apply(limpiar_nombre_alumno)
-            
         return df
-        
     except Exception as e:
-        st.error(f"Error técnico procesando datos: {e}")
+        st.error(f"Error IA: {e}")
         return None
 
-# --- GENERACIÓN DE TEXTOS AUTOMÁTICOS ---
+# --- GENERACIÓN TEXTOS ---
 def generar_comentario_individual(alumno, datos_alumno):
     suspensos = datos_alumno[datos_alumno['Nota'] < 5]
     num = len(suspensos)
@@ -159,7 +129,7 @@ def generar_comentario_individual(alumno, datos_alumno):
     txt = f"El alumno/a {alumno} tiene actualmente {num} materias suspensas."
     if num == 0: txt = "No tiene ninguna materia suspensa. ¡Excelente trabajo! Se recomienda mantener la constancia."
     elif num == 1: txt += f" La materia es: {', '.join(lista)}. Recuperación factible con refuerzo."
-    elif num == 2: txt += f" Las materias son: {', '.join(lista)}. Situación límite. Se aconseja organización urgente."
+    elif num == 2: txt += f" Las materias son: {', '.join(lista)}. Situación límite. Organización urgente."
     else: txt += f" Las materias son: {', '.join(lista)}. Situación preocupante que compromete la promoción."
     return txt
 
@@ -191,10 +161,8 @@ def add_alumno_to_doc(doc, alumno, datos_alumno, media, suspensos, stats_mat):
         mc = medias.get(row['Materia'], 0); c[2].text = f"{mc:.2f}"
         dif = row['Nota'] - mc; c[3].text = f"{dif:+.2f}"
         if row['Nota'] < 5:
-            run = c[1].paragraphs[0].runs[0]
-            run.font.color.rgb = RGBColor(255,0,0); run.bold = True
+            c[1].paragraphs[0].runs[0].font.color.rgb = RGBColor(255,0,0); c[1].paragraphs[0].runs[0].bold = True
 
-    # PIE DE PÁGINA
     doc.add_paragraph("\n\n")
     now = datetime.now()
     meses = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
@@ -203,8 +171,7 @@ def add_alumno_to_doc(doc, alumno, datos_alumno, media, suspensos, stats_mat):
     p_f = doc.add_paragraph(fecha_str); p_f.alignment = WD_ALIGN_PARAGRAPH.RIGHT
     doc.add_paragraph("\n")
     p_s = doc.add_paragraph("El Tutor del grupo:"); p_s.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    p_s.add_run("\n\n\n")
-    p_s.add_run("D. José Carlos Tejedor Lorenzo").bold = True
+    p_s.add_run("\n\n\n"); p_s.add_run("D. José Carlos Tejedor Lorenzo").bold = True
 
 def crear_informe_individual(alumno, datos_alumno, media, suspensos, stats_mat):
     doc = Document()
@@ -212,13 +179,15 @@ def crear_informe_individual(alumno, datos_alumno, media, suspensos, stats_mat):
     bio = io.BytesIO(); doc.save(bio); bio.seek(0)
     return bio
 
-def generar_informe_todos_alumnos(df, stats_al, stats_mat):
+def generar_informe_todos_alumnos(df, stats_al, stats_mat, orden_alumnos):
     doc = Document()
-    for i, al in enumerate(stats_al['Alumno'].unique()):
+    # Usamos orden_alumnos para iterar en el orden del PDF
+    for i, al in enumerate(orden_alumnos):
         d_al = df[df['Alumno'] == al]
-        info = stats_al[stats_al['Alumno'] == al].iloc[0]
-        add_alumno_to_doc(doc, al, d_al, info['Media'], info['Suspensos'], stats_mat)
-        if i < len(stats_al)-1: doc.add_page_break()
+        if not d_al.empty:
+            info = stats_al[stats_al['Alumno'] == al].iloc[0]
+            add_alumno_to_doc(doc, al, d_al, info['Media'], info['Suspensos'], stats_mat)
+            if i < len(orden_alumnos)-1: doc.add_page_break()
     bio = io.BytesIO(); doc.save(bio); bio.seek(0)
     return bio
 
@@ -271,7 +240,7 @@ with st.sidebar:
     api_key = st.text_input("🔑 API Key OpenAI", type="password")
     st.markdown("---")
     centro = st.text_input("Centro", "IES Lucía de Medrano")
-    grupo = st.text_input("Grupo", "1º BACH 7")
+    grupo = st.text_input("Grupo", "1º BACH 4")
     curso = st.text_input("Curso", "2024-2025")
     st.markdown("---")
     uploaded_files = st.file_uploader("📂 Subir Actas", type=['xlsx', 'pdf', 'docx', 'doc'], accept_multiple_files=True, key=f"up_{st.session_state.uploader_key}")
@@ -288,20 +257,18 @@ with st.sidebar:
                         try: df_t = pd.read_excel(f)
                         except: pass
                     elif f.name.endswith('.pdf'):
-                        # Extracción robusta de texto
                         txt = get_pdf_text_content(f)
                         if txt: df_t = process_data_with_ai(txt, api_key, f.name)
                     elif 'doc' in f.name:
                         txt = extract_text_from_docx(f)
                         if txt: df_t = process_data_with_ai(txt, api_key, f.name)
-                    
                     if df_t is not None: dfs.append(df_t)
                     bar.progress((i+1)/len(uploaded_files))
                 
                 if dfs:
                     st.session_state.data = pd.concat(dfs, ignore_index=True)
                     st.rerun()
-                else: st.error("No se extrajeron datos. Revisa el archivo.")
+                else: st.error("No se extrajeron datos.")
 
     if st.session_state.data is not None:
         if st.button("🔄 Subir nuevo"): reiniciar_app()
@@ -314,14 +281,20 @@ col_b3.info(f"📅 **Curso:** {curso}")
 
 if st.session_state.data is not None:
     df = st.session_state.data
-    # Normalización de columnas automática (si ya vienen bien del CSV)
+    # Normalización columnas
     if len(df.columns) >= 3:
         df.columns = ['Alumno', 'Materia', 'Nota']
+    df = df[['Alumno', 'Materia', 'Nota']]
     
-    # Limpieza y cálculos
+    # Limpieza nombres
+    df['Alumno'] = df['Alumno'].apply(limpiar_nombre_alumno)
     df = df.drop_duplicates(subset=['Alumno', 'Materia'], keep='last')
     df['Nota'] = pd.to_numeric(df['Nota'], errors='coerce')
     df['Aprobado'] = df['Nota'] >= 5
+    
+    # --- CAPTURA DE ORDEN ORIGINAL ---
+    # Pandas mantiene el orden de aparición por defecto. Lo guardamos aquí.
+    orden_alumnos = df['Alumno'].unique()
     
     stats_al = df.groupby('Alumno').agg(Suspensos=('Nota', lambda x: (x<5).sum()), Media=('Nota', 'mean')).reset_index()
     stats_mat = df.groupby('Materia').agg(Total=('Nota', 'count'), Aprobados=('Aprobado', 'sum'), Suspensos=('Nota', lambda x: (x<5).sum()), Media=('Nota', 'mean')).reset_index()
@@ -365,25 +338,45 @@ if st.session_state.data is not None:
     with tab2: st.dataframe(stats_mat.style.format({'Pct_Aprobados':'{:.1f}%'}), use_container_width=True)
     
     with tab3:
-        st.markdown("### Editor"); piv = df.pivot_table(index='Alumno', columns='Materia', values='Nota', aggfunc='first')
+        st.markdown("### 📝 Editor de Calificaciones")
+        # Creamos Pivot Table
+        piv = df.pivot_table(index='Alumno', columns='Materia', values='Nota', aggfunc='first')
+        
+        # 1. ORDENAMOS EL PIVOT SEGÚN EL ORDEN ORIGINAL
+        piv = piv.reindex(orden_alumnos)
+        
+        # 2. CALCULAMOS COLUMNA DE SUSPENSOS VISUAL
+        susp_col = (piv < 5).sum(axis=1)
+        piv.insert(0, 'Nº Suspensos', susp_col) # Insertar al principio
+        
         ed = st.data_editor(piv, use_container_width=True)
-        if st.button("🔄 Recalcular"):
+        
+        if st.button("🔄 Recalcular Datos Corregidos", type="primary"):
             try:
+                # Quitamos la columna de suspensos antes de procesar
+                if 'Nº Suspensos' in ed.columns:
+                    ed = ed.drop(columns=['Nº Suspensos'])
+                
                 new_df = ed.reset_index().melt(id_vars='Alumno', var_name='Materia', value_name='Nota')
-                new_df.dropna(subset=['Nota'], inplace=True); st.session_state.data = new_df; st.rerun()
+                new_df.dropna(subset=['Nota'], inplace=True)
+                st.session_state.data = new_df
+                st.rerun()
             except: pass
 
     with tab4:
+        st.header("Informes Individuales")
         c1, c2 = st.columns(2)
         with c1:
-            sel = st.selectbox("Alumno", stats_al['Alumno'].unique())
+            # Usamos el orden original en el desplegable
+            sel = st.selectbox("Seleccionar Alumno", orden_alumnos)
             if sel:
                 inf = stats_al[stats_al['Alumno']==sel].iloc[0]
                 st.info(generar_comentario_individual(sel, df[df['Alumno']==sel]))
-                st.download_button("Descargar", crear_informe_individual(sel, df[df['Alumno']==sel], inf['Media'], inf['Suspensos'], stats_mat), f"{sel}.docx")
+                st.download_button("Descargar Individual", crear_informe_individual(sel, df[df['Alumno']==sel], inf['Media'], inf['Suspensos'], stats_mat), f"{sel}.docx")
         with c2:
-            if st.button("🚀 Informe TODOS"):
-                st.download_button("Descargar ZIP", generar_informe_todos_alumnos(df, stats_al, stats_mat), f"Todos_{grupo}.docx", type="primary")
+            if st.button("🚀 Informe TODOS (Orden de Lista)"):
+                # Pasamos orden_alumnos a la función
+                st.download_button("Descargar ZIP", generar_informe_todos_alumnos(df, stats_al, stats_mat, orden_alumnos), f"Todos_{grupo}.docx", type="primary")
 
     with tab5:
         fig_p1, ax_p1 = plt.subplots(figsize=(6,4))
